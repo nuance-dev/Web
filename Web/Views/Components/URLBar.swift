@@ -633,11 +633,25 @@ struct SecurityDetailsPopover: View {
 // Bookmark button component
 struct BookmarkButton: View {
     @ObservedObject private var urlSynchronizer = URLSynchronizer.shared
-    @State private var isBookmarked = false
+    @ObservedObject private var bookmarkService = BookmarkService.shared
     @State private var hovering: Bool = false
     
     private var hasURL: Bool {
         !urlSynchronizer.currentURL.isEmpty
+    }
+    
+    private var currentURLString: String {
+        urlSynchronizer.currentURL
+    }
+    
+    private var currentTitleString: String {
+        let title = URLSynchronizer.shared.pageTitle
+        return title.isEmpty ? currentURLString : title
+    }
+    
+    private var isBookmarked: Bool {
+        guard !currentURLString.isEmpty else { return false }
+        return bookmarkService.isBookmarked(url: currentURLString)
     }
     
     var body: some View {
@@ -658,8 +672,10 @@ struct BookmarkButton: View {
     
     private func toggleBookmark() {
         guard hasURL else { return }
-        isBookmarked.toggle()
-        // TODO: Implement actual bookmark functionality with URLSynchronizer.currentURL
+        KeyboardShortcutHandler.shared.toggleBookmark(
+            url: currentURLString,
+            title: currentTitleString
+        )
     }
 }
 

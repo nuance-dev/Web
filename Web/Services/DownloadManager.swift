@@ -360,6 +360,19 @@ class DownloadManager: NSObject, ObservableObject {
         }
     }
 
+    /// Clear persisted download history entries
+    func clearDownloadHistory() {
+        downloadHistory.removeAll()
+        saveDownloadHistory()
+        AppLog.debug("Cleared download history")
+    }
+
+    /// Clear completed/failed/cancelled downloads and history records
+    func clearCompletedAndHistory() {
+        clearCompletedDownloads()
+        clearDownloadHistory()
+    }
+
     // MARK: - WKWebView Integration
 
     /// Handle WKDownload from WKWebView

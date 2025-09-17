@@ -1,6 +1,7 @@
 import Combine
 import SwiftUI
 import os.log
+import AppKit
 
 /// Service for handling keyboard shortcuts for history, bookmarks, and downloads
 /// Provides a centralized way to manage keyboard shortcuts without overloading views
@@ -85,6 +86,20 @@ class KeyboardShortcutHandler: ObservableObject {
                 self?.handleToggleCommandPalette(false)
             }
             .store(in: &cancellables)
+
+        // Clear History request
+        NotificationCenter.default.publisher(for: .clearHistoryRequested)
+            .sink { [weak self] _ in
+                self?.handleClearHistoryRequest()
+            }
+            .store(in: &cancellables)
+
+        // Clear Downloads request
+        NotificationCenter.default.publisher(for: .clearDownloadsRequested)
+            .sink { [weak self] _ in
+                self?.handleClearDownloadsRequest()
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Handler Methods
@@ -145,6 +160,52 @@ class KeyboardShortcutHandler: ObservableObject {
             showCommandPalette = show
         }
         logger.info("Command Palette \(show ? "shown" : "hidden")")
+    }
+
+    // MARK: - Clear Data Handlers (AppKit Alerts)
+
+    private func handleClearHistoryRequest() {
+        let alert = NSAlert()
+        alert.messageText = "Clear History?"
+        alert.informativeText = "This will permanently remove your browsing history. This action cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window = NSApplication.shared.keyWindow {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn {
+                    HistoryService.shared.clearAllHistory()
+                }
+            }
+        } else {
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                HistoryService.shared.clearAllHistory()
+            }
+        }
+    }
+
+    private func handleClearDownloadsRequest() {
+        let alert = NSAlert()
+        alert.messageText = "Clear Downloads?"
+        alert.informativeText = "This will remove completed and failed downloads from the list and clear the download history. Active downloads will not be affected."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+
+        if let window = NSApplication.shared.keyWindow {
+            alert.beginSheetModal(for: window) { response in
+                if response == .alertFirstButtonReturn {
+                    DownloadManager.shared.clearCompletedAndHistory()
+                }
+            }
+        } else {
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                DownloadManager.shared.clearCompletedAndHistory()
+            }
+        }
     }
 
     // MARK: - Public Interface

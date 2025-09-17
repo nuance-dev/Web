@@ -165,7 +165,7 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("y", modifiers: .command)
 
             Button("Clear History...") {
-                // TODO: Implement clear history
+                NotificationCenter.default.post(name: .clearHistoryRequested, object: nil)
             }
 
             Divider()
@@ -180,7 +180,7 @@ struct BrowserCommands: Commands {
             .keyboardShortcut("j", modifiers: [.command, .shift])
 
             Button("Clear Downloads...") {
-                // TODO: Implement clear downloads
+                NotificationCenter.default.post(name: .clearDownloadsRequested, object: nil)
             }
 
             Divider()
@@ -317,6 +317,10 @@ extension Notification.Name {
 
     // Security and Privacy shortcuts
     // Note: newIncognitoTabRequested is defined in IncognitoSession.swift
+
+    // Data clearing actions
+    static let clearHistoryRequested = Notification.Name("clearHistoryRequested")
+    static let clearDownloadsRequested = Notification.Name("clearDownloadsRequested")
 }
 
 // MARK: - Menu Content Views
