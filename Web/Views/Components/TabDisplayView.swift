@@ -375,6 +375,8 @@ struct WebContentArea: View {
     @AppStorage("tabDisplayMode") private var displayMode: TabDisplayMode = .sidebar
     @AppStorage("hideTopBar") private var hideTopBar: Bool = false
     @State private var isEdgeToEdgeMode: Bool = false
+    @State private var showFindOverlay: Bool = false
+    @State private var findQuery: String = ""
 
     // Use centralized URL synchronizer
     @ObservedObject private var urlSynchronizer = URLSynchronizer.shared
@@ -612,6 +614,33 @@ struct WebContentArea: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.95)))
                 } else if let activeTab = tabManager.activeTab {
                     WebContentView(tab: activeTab, tabManager: tabManager)
+                        .overlay(alignment: .topTrailing) {
+                            if showFindOverlay {
+                                FindOverlay(
+                                    query: $findQuery,
+                                    onClose: { withAnimation { showFindOverlay = false } },
+                                    onNext: {
+                                        if !findQuery.isEmpty {
+                                            activeTab.findInPage(findQuery, forward: true)
+                                        }
+                                    },
+                                    onPrev: {
+                                        if !findQuery.isEmpty {
+                                            activeTab.findInPage(findQuery, forward: false)
+                                        }
+                                    },
+                                    onSubmit: {
+                                        if !findQuery.isEmpty {
+                                            activeTab.findInPage(findQuery, forward: true)
+                                        }
+                                    }
+                                )
+                                .padding(.top, 8)
+                                .padding(.trailing, 8)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .zIndex(50)
+                            }
+                        }
                 } else {
                     NewTabView()
                 }
@@ -625,6 +654,14 @@ struct WebContentArea: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleEdgeToEdge)) { _ in
             isEdgeToEdgeMode.toggle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .findInPageRequested)) { _ in
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                showFindOverlay.toggle()
+            }
+            if showFindOverlay == true {
+                findQuery = ""
+            }
         }
         .background(
             // Add drag area to the padding/margin area around web content

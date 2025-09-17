@@ -92,9 +92,10 @@ class WebKitManager: ObservableObject {
         // Standard Safari user agent to prevent Google's embedded browser detection
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         
-        // Enable developer tools and inspection
+        // Enable developer tools and inspection based on user setting
         if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+            let enabled = UserDefaults.standard.object(forKey: "enableDeveloperTools") as? Bool
+            webView.isInspectable = (enabled ?? true)
         }
         
         // Performance settings
@@ -200,9 +201,10 @@ class WebKitManager: ObservableObject {
             webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         }
         
-        // Enable developer tools for OAuth debugging
+        // Enable developer tools for OAuth debugging (respect setting)
         if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+            let enabled = UserDefaults.standard.object(forKey: "enableDeveloperTools") as? Bool
+            webView.isInspectable = (enabled ?? true)
         }
         
         // Performance settings optimized for OAuth flows
