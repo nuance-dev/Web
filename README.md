@@ -1,154 +1,67 @@
-# Web - a webkit AI Browser for macOS
+# Web
 
-Powered by webkit and built natively with SwiftUI to delivers a minimal, progressive browsing experience with integrated local and remote AI capabilities.
+A small native browser for macOS.
 
-<img width="4694" height="2379" alt="image" src="https://github.com/user-attachments/assets/b54a2937-09d5-480a-9ca6-eae7967af30c" />
+<img src="docs/assets/glance.png" alt="Glance showing Wikipedia’s Titan article in a compact window" width="390">
 
-![Web Browser](https://img.shields.io/badge/platform-macOS-blue.svg)
-![Swift](https://img.shields.io/badge/Swift-6-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+Press `⌃⌥Space` to open **Glance**, search or paste a link, and browse in your screen corner. You can also right-click a link and choose **Open in Glance**. Pin the page while you work, or open it in Web when you need more room. Closing Glance clears its temporary session.
 
-*_Note: This is an experimental early access version, as AI models improve so will Web._*
+[Walkthroughs](https://github.com/nuance-dev/Web/pull/26) · [What's changed](docs/releases/0.1.0.md) · [Report a bug](https://github.com/nuance-dev/Web/issues) · [Build it](#build)
 
-*_Note 2: The AI features require an Apple M chip._* or BYOK to use AI providers like OpenAI, Anthropic and Gemini
+## Browsing
 
-*_Note 3: The current version is meant to experiment, play around and give feedback to gear development. It's missing key features as a browser._*
+- Compact native Liquid Glass chrome and a start page with saved pages and recent visits.
+- `⌘K` for tabs, commands and search.
+- Sidebar, top or hidden tabs; show the address bar or use Focus Mode from View.
+- Pin tabs, remove duplicates, and choose whether to restore your session.
+- Select a passage and choose **Copy Quote** to copy it with the page link.
+- Local AI with MLX, or your own OpenAI, Anthropic or Gemini API key.
+- Private tabs with separate temporary storage.
 
-## What's working
+Cloud page sharing is off until you enable it. The assistant can read and summarize; it cannot click, type or submit forms. [AI providers and privacy](docs/ai-providers.md)
 
+## Preview
 
-https://github.com/user-attachments/assets/e16842f8-fc2a-4984-91ee-9b012bd792f5
+Web 0.1.0 is a development preview. Local MLX generation and Stop are verified; cloud completions and wider browser compatibility need more testing. [Validation](docs/validation.md) · [Security review](docs/security-audit.md) · [Browser gap](docs/product-direction.md)
 
-NEW: AI Agents and BYOK AI cloud providers (OpenAI, Anthropic, Gemini)
+## Build
 
-https://github.com/user-attachments/assets/85629abc-5527-4345-b1a8-a988e0417c0a
+macOS 26.5 or later. Apple Silicon. Xcode 26 with the Metal toolchain.
 
-
-### Core Browsing
-- **WebKit Integration**: Native WebKit rendering with WKWebView
-- **Tab Management**: Tab hibernation for optimal performance
-- **Keyboard Shortcuts**: Comprehensive shortcuts (⌘T, ⌘W, ⌘R, etc.)
-- **Downloads**: Built-in download manager with progress tracking (Need to test)
-
-### Privacy & Security
-- **Incognito Mode**: Private browsing sessions
-- **Ad Blocking**: Integrated ad blocking service (Need to test if it can be disabled)
-- **Password Management**: Secure password handling (Need to test)
-- **Privacy Settings**: Granular privacy controls (Need to test)
-
-### AI Integration
-- **Local AI Models**: On-device AI powered by [Apple MLX](https://github.com/ml-explore/mlx) and [MLX Swift Examples](https://github.com/ml-explore/mlx-swift-examples)
-- **MLX Framework**: Apple Silicon optimized inference
-- **Privacy-First**: AI processing happens locally on device
-- **Smart Assistance**: Integrated AI sidebar for web content analysis with TL;DR and page + history context. (Still rough with bugs, but nice to play and have fun)
-
-## Requirements
-
-- macOS 14.0 or later
-- Apple Silicon Mac (for AI features)
-- Xcode 15.0+ (for development)
-
-## Installation
-
-### From Source
-
-1. Clone the repository:
-```bash
+```sh
 git clone https://github.com/nuance-dev/Web.git
 cd Web
-```
-
-2. Open the project in Xcode:
-```bash
+xcodebuild -downloadComponent MetalToolchain
 open Web.xcodeproj
 ```
 
-3. Build and run (⌘R)
+Choose your signing team locally, then run the Web scheme. The repository does not include a signing identity. Dependency revisions are pinned.
 
-## Architecture
+For a stripped local build, run `./scripts/build-release.sh`. Set `WEB_SIGNING_IDENTITY` to use your own certificate.
 
-Web follows MVVM architecture with SwiftUI and Combine:
-
-```
-Web/
-├── Models/           # Data models (Tab, Bookmark, etc.)
-├── Views/           # SwiftUI views and components
-├── ViewModels/      # Business logic and state management
-├── Services/        # Core services (Download, History, etc.)
-├── AI/             # Local AI integration
-└── Utils/          # Utilities and extensions
+```sh
+xcodebuild -project Web.xcodeproj -scheme Web \
+  -destination 'platform=macOS,arch=arm64' \
+  -only-testing:WebTests CODE_SIGNING_ALLOWED=NO test
 ```
 
-### Key Components
+## Shortcuts
 
-- **TabManager**: Handles tab lifecycle and hibernation
-- **WebView**: SwiftUI wrapper around WKWebView
-- **MLXRunner**: Local AI model execution
-- **DownloadManager**: File download handling
-- **BookmarkService**: Bookmark management
+| Action | Shortcut |
+| --- | --- |
+| Glance | `⌃⌥Space` (change in Settings) |
+| Commands | `⌘K` |
+| New tab | `⌘T` |
+| Private tab | `⇧⌘N` |
+| Close / reopen tab | `⌘W` / `⇧⌘T` |
+| Address | `⌘L` |
+| Show / hide address bar | `⇧⌘H` |
+| Focus Mode | `⇧⌘B` |
+| Find | `⌘F` |
+| Bookmark page | `⌘D` |
+| Next / previous tab | `⌃Tab` / `⇧⌃Tab` |
+| History | `⌘Y` |
+| Downloads | `⇧⌘J` |
+| Assistant | `⇧⌘A` |
 
-## AI Features
-
-Web integrates local AI capabilities using Apple's MLX framework and Swift examples:
-
-- **Framework**: [Apple MLX](https://github.com/ml-explore/mlx) with [MLX Swift Examples](https://github.com/ml-explore/mlx-swift-examples)
-- **Models**: Gemma and other compatible models
-- **Inference**: MLX-optimized for Apple Silicon
-- **Privacy**: All AI processing happens locally
-
-### Code Standards
-
-- Swift 6 with strict concurrency
-- Zero warnings/errors policy
-- Comprehensive keyboard shortcuts
-- Memory-efficient tab management
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## Keyboard Shortcuts
-
-| Action | Shortcut | Description |
-|--------|----------|-------------|
-| New Tab | ⌘T | Open new tab |
-| Close Tab | ⌘W | Close current tab |
-| Reopen Tab | ⇧⌘T | Reopen last closed tab |
-| Reload | ⌘R | Reload current page |
-| Address Bar | ⌘L | Focus address bar |
-| Find in Page | ⌘F | Search in page |
-| Downloads | ⇧⌘J | Show downloads |
-| Developer Tools | ⌥⌘I | Open developer tools |
-| Toggle Top Bar | ⇧⌘H | Cycle top bar modes |
-| Toggle Sidebar | ⌘S | Sidebar vs Top tabs |
-| Open AI Panel | ⇧⌘A | Open AI Sidebar |
-
-## Dependencies
-
-- [Apple MLX](https://github.com/ml-explore/mlx) - Machine learning framework for Apple Silicon
-- [MLX Swift Examples](https://github.com/ml-explore/mlx-swift-examples) - Swift examples and utilities for MLX
-- WebKit - Apple's web rendering engine
-- Core Data - Local data persistence
-- Combine - Reactive programming framework
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [Apple MLX](https://github.com/ml-explore/mlx) by Apple for optimized machine learning on Apple Silicon
-- [MLX Swift Examples](https://github.com/ml-explore/mlx-swift-examples) by Apple for Swift integration examples
-- Apple's WebKit team for the excellent web rendering engine
-- The Swift community for SwiftUI and modern iOS/macOS development patterns
-
-## 🔗 Links
-
-- Website: [Nuanc.me](https://nuanc.me)
-- Report issues: [GitHub Issues](https://github.com/nuance-dev/Web/issues)
-- Follow updates: [@Nuanced](https://x.com/Nuancedev)
-- [Buy me a coffee](https://buymeacoffee.com/nuanced)
+Built with SwiftUI, WebKit and [MLX](https://github.com/ml-explore/mlx-swift). [MIT license](LICENSE).
