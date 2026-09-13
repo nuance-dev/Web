@@ -57,6 +57,14 @@ struct BrowserCommands: Commands {
                 Text("Top").tag(TabDisplayMode.topBar)
                 Text("Hidden").tag(TabDisplayMode.hidden)
             }
+            Button(tabDisplayMode == .sidebar ? "Move Tabs to Top" : "Move Tabs to Sidebar") {
+                NotificationCenter.default.post(name: .toggleTabDisplay, object: nil)
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            Button(tabDisplayMode == .hidden ? "Show Tabs" : "Hide Tabs") {
+                NotificationCenter.default.post(name: .toggleTabVisibility, object: nil)
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
             Toggle("Show Address Bar", isOn: Binding(
                 get: { !hideAddressBar }, set: { hideAddressBar = !$0 }))
                 .keyboardShortcut("h", modifiers: [.command, .shift])
@@ -90,6 +98,83 @@ struct BrowserCommands: Commands {
 
         }
 
+        BrowserLibraryCommands()
+
+        CommandMenu("Settings") {
+            Button("Preferences...") {
+                NotificationCenter.default.post(name: .showSettingsRequested, object: nil)
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+
+        CommandGroup(replacing: .appInfo) {
+            Button("About Web") {
+                NotificationCenter.default.post(name: .showAboutRequested, object: nil)
+            }
+        }
+
+        CommandGroup(replacing: .help) {
+            Button("Commands and Shortcuts") {
+                NotificationCenter.default.post(name: .showCommandPaletteRequested, object: nil)
+            }
+        }
+
+        CommandMenu("AI Assistant") {
+            Button("Toggle AI Sidebar") {
+                NotificationCenter.default.post(name: .toggleAISidebar, object: nil)
+            }
+            .keyboardShortcut("a", modifiers: [.command, .shift])
+
+            Button("Focus AI Input") {
+                NotificationCenter.default.post(name: .focusAIInput, object: nil)
+            }
+            .keyboardShortcut("a", modifiers: [.command, .option])
+
+            Divider()
+
+            Button("Command Palette…") {
+                NotificationCenter.default.post(name: .showCommandPaletteRequested, object: nil)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+        }
+
+        CommandGroup(after: .windowArrangement) {
+
+            Button("Next Tab") {
+                NotificationCenter.default.post(name: .nextTabRequested, object: nil)
+            }
+            .keyboardShortcut("]", modifiers: [.command, .shift])
+
+            Button("Previous Tab") {
+                NotificationCenter.default.post(name: .previousTabRequested, object: nil)
+            }
+            .keyboardShortcut("[", modifiers: [.command, .shift])
+
+            Button("Next Tab (Control-Tab)") {
+                NotificationCenter.default.post(name: .nextTabRequested, object: nil)
+            }
+            .keyboardShortcut(.tab, modifiers: .control)
+
+            Button("Previous Tab (Control-Tab)") {
+                NotificationCenter.default.post(name: .previousTabRequested, object: nil)
+            }
+            .keyboardShortcut(.tab, modifiers: [.control, .shift])
+
+            Divider()
+
+            // Tab selection shortcuts (Cmd+1 through Cmd+9)
+            ForEach(1...9, id: \.self) { number in
+                Button("Go to Tab \(number)") {
+                    NotificationCenter.default.post(name: .selectTabByNumber, object: number)
+                }
+                .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: .command)
+            }
+        }
+    }
+}
+
+private struct BrowserLibraryCommands: Commands {
+    var body: some Commands {
         CommandMenu("Bookmarks") {
             Button("Bookmark This Page") {
                 NotificationCenter.default.post(
@@ -130,76 +215,6 @@ struct BrowserCommands: Commands {
 
             DownloadsMenuContent()
         }
-
-        CommandMenu("Settings") {
-            Button("Preferences...") {
-                NotificationCenter.default.post(name: .showSettingsRequested, object: nil)
-            }
-            .keyboardShortcut(",", modifiers: .command)
-        }
-
-        CommandGroup(replacing: .appInfo) {
-            Button("About Web") {
-                NotificationCenter.default.post(name: .showAboutRequested, object: nil)
-            }
-        }
-
-        CommandMenu("AI Assistant") {
-            Button("Toggle AI Sidebar") {
-                NotificationCenter.default.post(name: .toggleAISidebar, object: nil)
-            }
-            .keyboardShortcut("a", modifiers: [.command, .shift])
-
-            Button("Focus AI Input") {
-                NotificationCenter.default.post(name: .focusAIInput, object: nil)
-            }
-            .keyboardShortcut("a", modifiers: [.command, .option])
-
-            Divider()
-
-            Button("Command Palette…") {
-                NotificationCenter.default.post(name: .showCommandPaletteRequested, object: nil)
-            }
-            .keyboardShortcut("k", modifiers: .command)
-        }
-
-        CommandGroup(after: .windowArrangement) {
-
-            Button("Toggle Tab Display") {
-                NotificationCenter.default.post(name: .toggleTabDisplay, object: nil)
-            }
-            .keyboardShortcut("s", modifiers: [.command, .option])
-
-            Button("Next Tab") {
-                NotificationCenter.default.post(name: .nextTabRequested, object: nil)
-            }
-            .keyboardShortcut("]", modifiers: [.command, .shift])
-
-            Button("Previous Tab") {
-                NotificationCenter.default.post(name: .previousTabRequested, object: nil)
-            }
-            .keyboardShortcut("[", modifiers: [.command, .shift])
-
-            Button("Next Tab (Control-Tab)") {
-                NotificationCenter.default.post(name: .nextTabRequested, object: nil)
-            }
-            .keyboardShortcut(.tab, modifiers: .control)
-
-            Button("Previous Tab (Control-Tab)") {
-                NotificationCenter.default.post(name: .previousTabRequested, object: nil)
-            }
-            .keyboardShortcut(.tab, modifiers: [.control, .shift])
-
-            Divider()
-
-            // Tab selection shortcuts (Cmd+1 through Cmd+9)
-            ForEach(1...9, id: \.self) { number in
-                Button("Go to Tab \(number)") {
-                    NotificationCenter.default.post(name: .selectTabByNumber, object: number)
-                }
-                .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: .command)
-            }
-        }
     }
 }
 
@@ -225,6 +240,7 @@ extension Notification.Name {
 
     // Phase 2: Next-Gen UI shortcuts
     static let toggleTabDisplay = Notification.Name("toggleTabDisplay")
+    static let toggleTabVisibility = Notification.Name("toggleTabVisibility")
     static let toggleEdgeToEdge = Notification.Name("toggleEdgeToEdge")
     static let navigateBack = Notification.Name("navigateBack")
     static let navigateForward = Notification.Name("navigateForward")

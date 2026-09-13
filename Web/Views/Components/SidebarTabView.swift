@@ -7,7 +7,37 @@ struct SidebarTabView: View {
   @StateObject private var windowReference = BrowserWindowReference()
 
   var body: some View {
-    VStack(spacing: 2) {
+    GeometryReader { geometry in
+      VStack(spacing: 6) {
+        tabStack
+          .frame(height: min(CGFloat(tabManager.tabs.count) * 36 + 36,
+                             max(36, geometry.size.height - 104)))
+          .glassEffect(.regular, in: .rect(cornerRadius: 12))
+        Spacer(minLength: 0).background(WindowDragArea())
+        VStack(spacing: 0) {
+          railButton("Commands (⌘K)", icon: "command") {
+            KeyboardShortcutHandler.shared.present(.commands, in: windowReference.window)
+          }
+          railButton(
+            "Glance (\(PeekController.shared.shortcut.label))",
+            icon: "rectangle.bottomthird.inset.filled"
+          ) {
+            NotificationCenter.default.post(name: .togglePeekRequested, object: nil)
+          }
+          railButton("Settings (⌘,)", icon: "gearshape") {
+            KeyboardShortcutHandler.shared.togglePanel(.settings, in: windowReference.window)
+          }
+        }
+        .padding(4)
+        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+      }
+    }
+    .frame(width: 44)
+    .background(BrowserWindowReader(reference: windowReference))
+  }
+
+  private var tabStack: some View {
+    ScrollViewReader { proxy in
       ScrollView(.vertical, showsIndicators: false) {
         LazyVStack(spacing: 2) {
           ForEach(tabManager.tabs) { tab in
@@ -18,6 +48,7 @@ struct SidebarTabView: View {
               isDragging: false,
               tabManager: tabManager
             ) { tabManager.setActiveTab(tab) }
+            .id(tab.id)
             .onHover { hoveredTabID = $0 ? tab.id : nil }
             .contextMenu { TabContextMenu(tab: tab, tabManager: tabManager) }
             .draggable(tab) { SidebarTabPreview(tab: tab) }
@@ -26,7 +57,6 @@ struct SidebarTabView: View {
             } isTargeted: {
               dropTargetID = $0 ? tab.id : nil
             }
-
           }
           railButton("New tab", icon: "plus") { _ = tabManager.createNewTab() }
             .dropDestination(for: Tab.self) { tabs, _ in
@@ -36,30 +66,18 @@ struct SidebarTabView: View {
               return tabManager.moveTabSafely(fromIndex: from, toIndex: tabManager.tabs.count)
             }
         }
-        .padding(.top, 4)
-        .padding(.bottom, 2)
-        .padding(.horizontal, 4)
+        .padding(4)
       }
-      Spacer(minLength: 0).background(WindowDragArea())
-      VStack(spacing: 1) {
-        railButton("Commands (⌘K)", icon: "command") {
-          KeyboardShortcutHandler.shared.present(.commands, in: windowReference.window)
-        }
-        railButton(
-          "Glance (\(PeekController.shared.shortcut.label))",
-          icon: "rectangle.bottomthird.inset.filled"
-        ) {
-          NotificationCenter.default.post(name: .togglePeekRequested, object: nil)
-        }
-        railButton("Settings (⌘,)", icon: "gearshape") {
-          KeyboardShortcutHandler.shared.togglePanel(.settings, in: windowReference.window)
-        }
+      .onAppear { revealActiveTab(using: proxy) }
+      .onChange(of: tabManager.activeTab?.id) { _, _ in
+        revealActiveTab(using: proxy)
       }
-      .padding(.horizontal, 4)
-      .padding(.bottom, 4)
     }
-    .frame(width: 48)
-    .background(BrowserWindowReader(reference: windowReference))
+  }
+
+  private func revealActiveTab(using proxy: ScrollViewProxy) {
+    guard let id = tabManager.activeTab?.id else { return }
+    DispatchQueue.main.async { proxy.scrollTo(id) }
   }
 
   private func railButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View
@@ -68,7 +86,7 @@ struct SidebarTabView: View {
       Image(systemName: icon)
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.secondary)
-        .frame(width: 40, height: 30)
+        .frame(width: 36, height: 28)
         .contentShape(Rectangle())
     }
     .buttonStyle(BrowserControlStyle())
@@ -94,35 +112,53 @@ struct SidebarTabItem: View {
   let onTap: () -> Void
 
   var body: some View {
-    Button(action: onTap) {
-      ZStack(alignment: .bottomTrailing) {
-        Group {
-          if tab.isLoading {
-            ProgressView().controlSize(.mini).frame(width: 16, height: 16)
-          } else {
-            FaviconView(tab: tab, size: 16)
+    ZStack(alignment: .topTrailing) {
+      Button(action: onTap) {
+        ZStack(alignment: .bottomTrailing) {
+          Group {
+            if tab.isLoading {
+              ProgressView().controlSize(.mini).frame(width: 16, height: 16)
+            } else {
+              FaviconView(tab: tab, size: 16)
+            }
+          }
+          .frame(width: 36, height: 34)
+          if tab.isIncognito || tab.isPinned {
+            Image(systemName: tab.isIncognito ? "eye.slash.fill" : "pin.fill")
+              .font(.system(size: 8))
+              .foregroundStyle(.secondary)
+              .padding(2)
           }
         }
-        .frame(width: 40, height: 36)
-        if tab.isIncognito || tab.isPinned {
-          Image(systemName: tab.isIncognito ? "eye.slash.fill" : "pin.fill")
-            .font(.system(size: 8))
-            .foregroundStyle(.secondary)
-            .padding(2)
-        }
+        .contentShape(RoundedRectangle(cornerRadius: 7))
       }
-      .contentShape(RoundedRectangle(cornerRadius: 7))
-      .background(
-        Color.primary.opacity(isActive ? 0.09 : isHovered ? 0.045 : 0),
-        in: RoundedRectangle(cornerRadius: 7)
-      )
+      .buttonStyle(BrowserControlStyle())
+      .help("\(tab.title.isEmpty ? "New tab" : tab.title)\(tab.url?.host.map { "\n\($0)" } ?? "")")
+      .accessibilityLabel(tab.title.isEmpty ? "New tab" : tab.title)
+      .accessibilityValue(tab.isIncognito ? "Private" : "")
+      .accessibilityAddTraits(isActive ? [.isSelected] : [])
+      .accessibilityAction(named: "Close tab") { tabManager.closeTab(tab) }
+
+      if isHovered {
+        Button { tabManager.closeTab(tab) } label: {
+          Image(systemName: "xmark")
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 12, height: 12)
+            // Keep the row's original center available for selecting the tab.
+            .frame(width: 20, height: 16, alignment: .topTrailing)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(BrowserControlStyle())
+        .help("Close tab")
+        .accessibilityLabel("Close \(tab.title.isEmpty ? "tab" : tab.title)")
+      }
     }
-    .buttonStyle(BrowserControlStyle())
-    .help("\(tab.title.isEmpty ? "New tab" : tab.title)\(tab.url?.host.map { "\n\($0)" } ?? "")")
-    .accessibilityLabel(tab.title.isEmpty ? "New tab" : tab.title)
-    .accessibilityValue(tab.isIncognito ? "Private" : "")
-    .accessibilityAddTraits(isActive ? [.isSelected] : [])
-    .accessibilityAction(named: "Close tab") { tabManager.closeTab(tab) }
+    .frame(width: 36, height: 34)
+    .background(
+      Color.primary.opacity(isActive ? 0.09 : isHovered ? 0.045 : 0),
+      in: RoundedRectangle(cornerRadius: 7)
+    )
   }
 }
 

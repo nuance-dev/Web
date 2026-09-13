@@ -8,51 +8,63 @@ struct TopBarTabView: View {
   var body: some View {
     HStack(spacing: 2) {
       CompactWindowControls()
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 2) {
-          ForEach(tabManager.tabs) { tab in
-            TopBarTabItem(
-              tab: tab,
-              isActive: tab.id == tabManager.activeTab?.id,
-              isHovered: hoveredTabID == tab.id || dropTargetID == tab.id,
-              isDragging: false,
-              onTap: { tabManager.setActiveTab(tab) }, tabManager: tabManager
-            )
-            .frame(width: 160)
-            .onHover { hoveredTabID = $0 ? tab.id : nil }
-            .contextMenu { TabContextMenu(tab: tab, tabManager: tabManager) }
-            .draggable(tab) { TopBarTabPreview(tab: tab) }
+      ScrollViewReader { proxy in
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 2) {
+            ForEach(tabManager.tabs) { tab in
+              TopBarTabItem(
+                tab: tab,
+                isActive: tab.id == tabManager.activeTab?.id,
+                isHovered: hoveredTabID == tab.id || dropTargetID == tab.id,
+                isDragging: false,
+                onTap: { tabManager.setActiveTab(tab) }, tabManager: tabManager
+              )
+              .frame(width: 160)
+              .id(tab.id)
+              .onHover { hoveredTabID = $0 ? tab.id : nil }
+              .contextMenu { TabContextMenu(tab: tab, tabManager: tabManager) }
+              .draggable(tab) { TopBarTabPreview(tab: tab) }
+              .dropDestination(for: Tab.self) { tabs, _ in
+                guard let dropped = tabs.first,
+                  let from = tabManager.tabs.firstIndex(where: { $0.id == dropped.id }),
+                  let to = tabManager.tabs.firstIndex(where: { $0.id == tab.id }), from != to
+                else { return false }
+                return tabManager.moveTabSafely(fromIndex: from, toIndex: to > from ? to + 1 : to)
+              } isTargeted: {
+                dropTargetID = $0 ? tab.id : nil
+              }
+
+            }
+            Button {
+              _ = tabManager.createNewTab()
+            } label: {
+              Image(systemName: "plus").font(.system(size: 13)).frame(width: 26, height: 26)
+            }
+            .buttonStyle(BrowserControlStyle())
+            .help("New tab (⌘T)")
+            .accessibilityLabel("New tab")
             .dropDestination(for: Tab.self) { tabs, _ in
               guard let dropped = tabs.first,
-                let from = tabManager.tabs.firstIndex(where: { $0.id == dropped.id }),
-                let to = tabManager.tabs.firstIndex(where: { $0.id == tab.id }), from != to
+                let from = tabManager.tabs.firstIndex(where: { $0.id == dropped.id })
               else { return false }
-              return tabManager.moveTabSafely(fromIndex: from, toIndex: to > from ? to + 1 : to)
-            } isTargeted: {
-              dropTargetID = $0 ? tab.id : nil
+              return tabManager.moveTabSafely(fromIndex: from, toIndex: tabManager.tabs.count)
             }
-
           }
-          Button {
-            _ = tabManager.createNewTab()
-          } label: {
-            Image(systemName: "plus").font(.system(size: 13)).frame(width: 26, height: 26)
-          }
-          .buttonStyle(BrowserControlStyle())
-          .help("New tab (⌘T)")
-          .accessibilityLabel("New tab")
-          .dropDestination(for: Tab.self) { tabs, _ in
-            guard let dropped = tabs.first,
-              let from = tabManager.tabs.firstIndex(where: { $0.id == dropped.id })
-            else { return false }
-            return tabManager.moveTabSafely(fromIndex: from, toIndex: tabManager.tabs.count)
-          }
+          .padding(.trailing, 2)
         }
-        .padding(.trailing, 2)
+        .onAppear { revealActiveTab(using: proxy) }
+        .onChange(of: tabManager.activeTab?.id) { _, _ in
+          revealActiveTab(using: proxy)
+        }
       }
     }
     .frame(height: 36)
     .background(WindowDragArea())
+  }
+
+  private func revealActiveTab(using proxy: ScrollViewProxy) {
+    guard let id = tabManager.activeTab?.id else { return }
+    DispatchQueue.main.async { proxy.scrollTo(id) }
   }
 }
 
@@ -108,7 +120,7 @@ struct TopBarTabItem: View {
       Color.primary.opacity(isHovered && !isActive ? 0.05 : 0),
       in: RoundedRectangle(cornerRadius: 7)
     )
-    .glassEffect(isActive ? .regular : .identity, in: .rect(cornerRadius: 7))
+    .background(Color.primary.opacity(isActive ? 0.08 : 0), in: .rect(cornerRadius: 7))
     .help(tab.url?.absoluteString ?? "New tab")
   }
 }

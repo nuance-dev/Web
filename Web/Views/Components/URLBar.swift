@@ -580,21 +580,20 @@ struct DownloadsButton: View {
 }
 
 struct AIToggleButton: View {
-  @State private var expanded = false
+  @EnvironmentObject private var presentation: AssistantPresentationState
   var body: some View {
-    Button {
-      NotificationCenter.default.post(name: .toggleAISidebar, object: nil)
-    } label: {
-      Image(systemName: "sidebar.right")
-        .font(.system(size: 13))
-        .foregroundStyle(expanded ? Color.accentColor : .secondary)
-        .frame(width: 24, height: 24)
-    }
-    .buttonStyle(BrowserControlStyle())
-    .help("Assistant")
-    .accessibilityLabel(expanded ? "Hide assistant" : "Show assistant")
-    .onReceive(NotificationCenter.default.publisher(for: .aISidebarStateChanged)) {
-      expanded = $0.object as? Bool ?? false
+    if !presentation.isExpanded {
+      Button {
+        NotificationCenter.default.post(name: .toggleAISidebar, object: nil)
+      } label: {
+        Image(systemName: "sidebar.right")
+          .font(.system(size: 13))
+          .foregroundStyle(.secondary)
+          .frame(width: 24, height: 24)
+      }
+      .buttonStyle(BrowserControlStyle())
+      .help("Open assistant (⇧⌘A)")
+      .accessibilityLabel("Open assistant")
     }
   }
 }

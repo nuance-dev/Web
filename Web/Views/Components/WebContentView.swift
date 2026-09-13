@@ -91,41 +91,7 @@ struct PersistentWebView: View {
     @Binding var hoveredLink: String?
 
     var body: some View {
-        WebView(
-            url: Binding(
-                get: { tab.url },
-                set: { tab.url = $0 }
-            ),
-            canGoBack: Binding(
-                get: { tab.canGoBack },
-                set: { tab.canGoBack = $0 }
-            ),
-            canGoForward: Binding(
-                get: { tab.canGoForward },
-                set: { tab.canGoForward = $0 }
-            ),
-            isLoading: Binding(
-                get: { tab.isLoading },
-                set: { tab.isLoading = $0 }
-            ),
-            estimatedProgress: Binding(
-                get: { tab.estimatedProgress },
-                set: { tab.estimatedProgress = $0 }
-            ),
-            title: Binding(
-                get: { tab.title },
-                set: { tab.title = $0 ?? "New Tab" }
-            ),
-            favicon: Binding(
-                get: { tab.favicon },
-                set: { tab.favicon = $0 }
-            ),
-            hoveredLink: $hoveredLink,
-            mixedContentStatus: .constant(nil),
-            tab: tab,
-            onNavigationAction: nil,
-            onDownloadRequest: nil
-        )
+        WebView(tab: tab, hoveredLink: $hoveredLink)
         .id(tab.id)
     }
 }
@@ -137,25 +103,19 @@ private struct BrowserFindBar: View {
     let onClose: () -> Void
     @State private var query = ""
     @State private var hasMatch = true
-    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Find in page", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .frame(width: 160)
-                .focused($focused)
+            BrowserFindField(text: $query, focusRequest: focusRequest,
+                             onFind: { find(backward: $0) }, onClose: onClose)
+                .frame(minWidth: 64, idealWidth: 160, maxWidth: 160)
                 .onChange(of: query) { _, _ in find(backward: false) }
-                .onKeyPress(.return, phases: .down) { key in
-                    find(backward: key.modifiers.contains(.shift))
-                    return .handled
-                }
-                .onExitCommand(perform: onClose)
-                .accessibilityLabel("Find in page")
             if !query.isEmpty && !hasMatch {
-                Text("No matches").font(.system(size: 10)).foregroundStyle(.secondary)
+                Text("No matches")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
             }
             Button { find(backward: true) } label: {
                 Image(systemName: "chevron.up").font(.system(size: 11)).frame(width: 24, height: 26)
@@ -185,11 +145,6 @@ private struct BrowserFindBar: View {
         .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.15), radius: 10, y: 4)
-        .task { focused = true }
-        .onChange(of: focusRequest) { _, _ in
-            focused = true
-            DispatchQueue.main.async { NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil) }
-        }
     }
 
     private func find(backward: Bool) {
@@ -201,6 +156,98 @@ private struct BrowserFindBar: View {
         webView.find(requestedQuery, configuration: configuration) { result in
             guard query == requestedQuery else { return }
             hasMatch = requestedQuery.isEmpty || result.matchFound
+        }
+    }
+}
+
+/// Focus the actual field after AppKit attaches it, once for each Command-F request.
+private struct BrowserFindField: NSViewRepresentable {
+    @Binding var text: String
+    let focusRequest: UUID
+    let onFind: (Bool) -> Void
+    let onClose: () -> Void
+
+    func makeNSView(context: Context) -> FindTextField { FindTextField() }
+
+    func updateNSView(_ field: FindTextField, context: Context) {
+        field.onTextChange = { text = $0 }
+        field.onFind = onFind
+        field.onClose = onClose
+        if field.stringValue != text { field.stringValue = text }
+        field.requestFocus(focusRequest)
+    }
+
+    final class FindTextField: NSTextField, NSTextFieldDelegate {
+        var onTextChange: ((String) -> Void)?
+        var onFind: ((Bool) -> Void)?
+        var onClose: (() -> Void)?
+        private var pendingFocusRequest: UUID?
+        private var completedFocusRequest: UUID?
+        private var focusScheduled = false
+
+        init() {
+            super.init(frame: .zero)
+            isBordered = false
+            isBezeled = false
+            drawsBackground = false
+            isEditable = true
+            isSelectable = true
+            focusRingType = .none
+            font = .systemFont(ofSize: 13)
+            placeholderString = "Find in page"
+            delegate = self
+            setAccessibilityLabel("Find in page")
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height)
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            scheduleFocus()
+        }
+
+        func requestFocus(_ request: UUID) {
+            guard request != completedFocusRequest else { return }
+            pendingFocusRequest = request
+            scheduleFocus()
+        }
+
+        private func scheduleFocus() {
+            guard window != nil, pendingFocusRequest != nil, !focusScheduled else { return }
+            focusScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.focusScheduled = false
+                guard let window = self.window, window.isKeyWindow,
+                      let request = self.pendingFocusRequest,
+                      window.makeFirstResponder(self) else { return }
+                self.selectText(nil)
+                self.completedFocusRequest = request
+                self.pendingFocusRequest = nil
+            }
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            onTextChange?(stringValue)
+        }
+
+        func control(_ control: NSControl, textView: NSTextView,
+                     doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSTextView.insertNewline(_:)) ||
+                commandSelector == #selector(NSTextView.insertLineBreak(_:)) ||
+                commandSelector == #selector(NSTextView.insertNewlineIgnoringFieldEditor(_:)) {
+                onFind?(NSApp.currentEvent?.modifierFlags.contains(.shift) == true)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                onClose?()
+                return true
+            }
+            return false
         }
     }
 }

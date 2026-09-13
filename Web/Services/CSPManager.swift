@@ -177,7 +177,6 @@ class CSPManager: NSObject, ObservableObject {
 
     enum ScriptType: String, CaseIterable {
         case linkHover = "linkHover"
-        case timerCleanup = "timerCleanup"
         case autofill = "autofill"
         case adBlock = "adBlock"
         case incognito = "incognito"

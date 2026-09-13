@@ -14,7 +14,7 @@ This is a source review and hardening pass, not an independent penetration test 
 
 ## Verified here
 
-`BrowserSecurityTests` covers credential domain spoofing, HTTP downgrade/port mismatch, subframe and stale-origin messages, path traversal, direction-control spoofing and filename bounds. All five passed in the 65-test application suite. Download policy, file lifecycle and type classification have separate regression tests. The Release build passed, and an installed-app attachment check preserved its exact bytes and native quarantine attribute. [Validation details](validation.md) record the tested scope.
+`BrowserSecurityTests` covers credential domain spoofing, HTTP downgrade/port mismatch, subframe and stale-origin messages, path traversal, direction-control spoofing and filename bounds. All five passed in the 87-test application suite. Download policy, file lifecycle and type classification have separate regression tests. The Release build passed, and an earlier installed-app attachment check preserved its exact bytes and native quarantine attribute. [Validation details](validation.md) record the tested scope.
 
 ## Remaining boundaries
 

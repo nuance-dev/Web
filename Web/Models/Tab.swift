@@ -169,9 +169,6 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
 
     // MARK: - Performance Management
     func hibernate() {
-        // CRITICAL: Clean up JavaScript timers before hibernating to prevent CPU usage
-        cleanupWebViewTimers()
-
         // Use TabHibernationManager for true resource hibernation
         TabHibernationManager.shared.forceHibernate(self)
     }
@@ -392,28 +389,6 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
 
     deinit {
         hibernationTimer?.invalidate()
-
-        // CRITICAL: Clean up all JavaScript timers when tab is deallocated
-        cleanupWebViewTimers()
-    }
-
-    /// CRITICAL: Clean up JavaScript timers to prevent CPU usage and memory leaks
-    private func cleanupWebViewTimers() {
-        guard let webView = webView else { return }
-
-        // Execute JavaScript timer cleanup to prevent CPU spikes
-        webView.evaluateJavaScript("if (window.cleanupAllTimers) { window.cleanupAllTimers(); }") {
-            result, error in
-            if let error = error {
-                if AppLog.isVerboseEnabled {
-                    print("⚠️ Tab \(self.id) timer cleanup error: \(error.localizedDescription)")
-                }
-            } else {
-                if AppLog.isVerboseEnabled {
-                    print("🧹 Tab \(self.id) timers cleaned up successfully")
-                }
-            }
-        }
     }
 
     // MARK: - Equatable Implementation

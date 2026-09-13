@@ -54,10 +54,22 @@ struct WebView: NSViewRepresentable {
     let onNavigationAction: ((WKNavigationAction) -> WKNavigationActionPolicy)?
     let onDownloadRequest: ((URL, String?) -> Void)?
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> NativePageContainer {
+        NativePageContainer(webView: configuredWebView(coordinator: context.coordinator))
+    }
+
+    static func preload(_ tab: Tab) {
+        guard let url = tab.url, NavigationResolver.isWebURL(url), !tab.isHibernated else { return }
+        let view = WebView(tab: tab, hoveredLink: .constant(nil))
+        let coordinator = view.makeCoordinator()
+        let webView = view.configuredWebView(coordinator: coordinator)
+        view.loadInitialURL(in: webView, coordinator: coordinator)
+    }
+
+    func configuredWebView(coordinator: Coordinator) -> WKWebView {
         if let existing = tab?.webView as? CustomWebView {
-            context.coordinator.parent = self
-            context.coordinator.webView = existing
+            coordinator.parent = self
+            coordinator.webView = existing
             return existing
         }
         // Use shared WebKitManager for optimized memory usage and shared process pool
@@ -91,18 +103,8 @@ struct WebView: NSViewRepresentable {
         ) {
             config.userContentController.addUserScript(linkHoverScript)
         }
-        config.userContentController.add(context.coordinator, name: "linkHover")
-        config.userContentController.add(context.coordinator, name: "linkContextMenu")
-
-        // SECURITY: Use CSP-protected timer cleanup script
-        if let timerCleanupScript = CSPManager.shared.secureScriptInjection(
-            script: timerCleanupJavaScript,
-            type: .timerCleanup,
-            webView: createTemporaryWebView(with: config)
-        ) {
-            config.userContentController.addUserScript(timerCleanupScript)
-        }
-        config.userContentController.add(context.coordinator, name: "timerCleanup")
+        config.userContentController.add(coordinator, name: "linkHover")
+        config.userContentController.add(coordinator, name: "linkContextMenu")
 
         // SECURITY: Inject Agent Bridge runtime (M2)
         if let agentBridgeScript = CSPManager.shared.secureScriptInjection(
@@ -112,14 +114,14 @@ struct WebView: NSViewRepresentable {
         ) {
             config.userContentController.addUserScript(agentBridgeScript)
         }
-        config.userContentController.add(context.coordinator, name: "agentBridge")
+        config.userContentController.add(coordinator, name: "agentBridge")
 
         // Create WebView using WebKitManager for optimal memory usage
         let safeFrame = CGRect(x: 0, y: 0, width: 100, height: 100)
         let webView = CustomWebView(
-            frame: safeFrame, configuration: config, coordinator: context.coordinator)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
+            frame: safeFrame, configuration: config, coordinator: coordinator)
+        webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
 
         // CRITICAL FIX: Enable automatic resizing for window resize support
         webView.autoresizingMask = [.width, .height]
@@ -155,19 +157,19 @@ struct WebView: NSViewRepresentable {
         // WebGL support is built into WebKit and doesn't require special configuration
 
         // Set up observers with error handling
-        context.coordinator.setupObservers(for: webView)
+        coordinator.setupObservers(for: webView)
 
         // SECURITY: Set up mixed content monitoring if tab exists
         if let tab = tab {
             // Wire up MixedContentManager (installs KVO and enforces policy)
             MixedContentManager.shared.setupMixedContentMonitoring(for: webView, tabID: tab.id)
             // Subscribe coordinator to status change notifications for UI updates
-            context.coordinator.setupMixedContentMonitoring(for: webView, tabID: tab.id)
+            coordinator.setupMixedContentMonitoring(for: webView, tabID: tab.id)
         }
 
         // Store webView reference for coordinator and tab with ownership validation
-        context.coordinator.webView = webView
-        context.coordinator.pageAgent = PageAgent(webView: webView)
+        coordinator.webView = webView
+        coordinator.pageAgent = PageAgent(webView: webView)
         if let tab = tab {
             // CRITICAL: Ensure exclusive WebView ownership per tab
             if let existingWebView = tab.webView, existingWebView !== webView {
@@ -183,16 +185,18 @@ struct WebView: NSViewRepresentable {
         return webView
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {
+    func updateNSView(_ container: NativePageContainer, context: Context) {
         context.coordinator.parent = self
-        // Tab.navigate and WebKit own subsequent navigation. SwiftUI only loads an initial URL.
+        loadInitialURL(in: container.webView, coordinator: context.coordinator)
+    }
+
+    private func loadInitialURL(in webView: WKWebView, coordinator: Coordinator) {
         guard let requestedURL = url,
               NavigationResolver.isWebURL(requestedURL),
               webView.url == nil, !webView.isLoading,
-              context.coordinator.lastLoadedURL != requestedURL
-        else { return }
-        context.coordinator.lastLoadedURL = requestedURL
-        context.coordinator.lastLoadTime = Date()
+              coordinator.lastLoadedURL != requestedURL else { return }
+        coordinator.lastLoadedURL = requestedURL
+        coordinator.lastLoadTime = Date()
         webView.load(URLRequest(url: requestedURL))
     }
 
@@ -207,121 +211,6 @@ struct WebView: NSViewRepresentable {
     // SECURITY: Helper function to create temporary WebView for CSP script injection
     private func createTemporaryWebView(with config: WKWebViewConfiguration) -> WKWebView {
         return WKWebView(frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: config)
-    }
-
-    // JavaScript for comprehensive timer cleanup to prevent CPU issues
-    private var timerCleanupJavaScript: String {
-        """
-        (function() {
-            'use strict';
-            
-            // Global timer registry to track all timers for cleanup and suspension
-            window.webBrowserTimerRegistry = window.webBrowserTimerRegistry || {
-                intervals: new Set(),
-                timeouts: new Set(),
-                originalSetInterval: window.setInterval,
-                originalSetTimeout: window.setTimeout,
-                originalClearInterval: window.clearInterval,
-                originalClearTimeout: window.clearTimeout,
-                suspended: false,
-                suspendedTimers: { intervals: [], timeouts: [] }
-            };
-            
-            const registry = window.webBrowserTimerRegistry;
-            
-            // Override setInterval to track all intervals and respect suspension
-            window.setInterval = function(callback, delay, ...args) {
-                if (registry.suspended) {
-                    // In suspended mode, delay timers significantly (60 seconds minimum)
-                    delay = Math.max(delay, 60000);
-                }
-                const id = registry.originalSetInterval.call(this, callback, delay, ...args);
-                registry.intervals.add(id);
-                return id;
-            };
-            
-            // Override setTimeout to track all timeouts and respect suspension
-            window.setTimeout = function(callback, delay, ...args) {
-                if (registry.suspended) {
-                    // In suspended mode, delay timeouts significantly
-                    delay = Math.max(delay, 10000);
-                }
-                const id = registry.originalSetTimeout.call(this, callback, delay, ...args);
-                registry.timeouts.add(id);
-                return id;
-            };
-            
-            // Override clearInterval to remove from tracking
-            window.clearInterval = function(id) {
-                registry.intervals.delete(id);
-                return registry.originalClearInterval.call(this, id);
-            };
-            
-            // Override clearTimeout to remove from tracking
-            window.clearTimeout = function(id) {
-                registry.timeouts.delete(id);
-                return registry.originalClearTimeout.call(this, id);
-            };
-            
-            // Global cleanup function
-            window.cleanupAllTimers = function() {
-                // Clear all tracked intervals
-                registry.intervals.forEach(id => {
-                    try {
-                        registry.originalClearInterval.call(window, id);
-                    } catch (e) {
-                        console.warn('Failed to clear interval:', id, e);
-                    }
-                });
-                registry.intervals.clear();
-                
-                // Clear all tracked timeouts
-                registry.timeouts.forEach(id => {
-                    try {
-                        registry.originalClearTimeout.call(window, id);
-                    } catch (e) {
-                        console.warn('Failed to clear timeout:', id, e);
-                    }
-                });
-                registry.timeouts.clear();
-                
-                // Clean up specific timers that might not be tracked
-                if (window.adBlockStatsTimer) {
-                    registry.originalClearInterval.call(window, window.adBlockStatsTimer);
-                    window.adBlockStatsTimer = null;
-                }
-                
-                if (window.passwordFormTimer) {
-                    registry.originalClearInterval.call(window, window.passwordFormTimer);
-                    window.passwordFormTimer = null;
-                }
-                
-                if (window.incognitoStatsTimer) {
-                    registry.originalClearInterval.call(window, window.incognitoStatsTimer);
-                    window.incognitoStatsTimer = null;
-                }
-                
-                if (window.formCheckTimeout) {
-                    registry.originalClearTimeout.call(window, window.formCheckTimeout);
-                    window.formCheckTimeout = null;
-                }
-                
-                // Notify native code that cleanup is complete
-                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.timerCleanup) {
-                    window.webkit.messageHandlers.timerCleanup.postMessage({
-                        type: 'cleanupComplete',
-                        intervalsCleared: registry.intervals.size,
-                        timeoutsCleared: registry.timeouts.size
-                    });
-                }
-            };
-            
-            // Only cleanup on actual navigation away from page, not visibility changes
-            window.addEventListener('beforeunload', window.cleanupAllTimers);
-            // Removed 'pagehide' event - too aggressive and interferes with focus management
-            
-        })();
-        """
     }
 
     // JavaScript for link hover detection and right-click context menu
@@ -1274,6 +1163,7 @@ struct WebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!)
         {
             documentRevision &+= 1
+            parent.tab?.themeColor = nil
             parent.isLoading = true
             parent.tab?.notifyLoadingStateChanged()
 
@@ -1310,6 +1200,7 @@ struct WebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            refreshThemeColor(from: webView)
             parent.isLoading = false
             parent.title = webView.title
             parent.canGoBack = webView.canGoBack
@@ -1350,7 +1241,7 @@ struct WebView: NSViewRepresentable {
             }
 
             // Only extract favicon if we don't have one for this domain
-            if parent.tab?.isIncognito != true,
+            if parent.tab?.isActive == true, parent.tab?.isIncognito != true,
                 let currentURL = webView.url, let host = currentURL.host {
                 Self.cacheQueue.sync {
 
@@ -1580,12 +1471,8 @@ struct WebView: NSViewRepresentable {
 
         private func extractFavicon(from webView: WKWebView, websiteHost: String) {
             let script = """
-                function getFaviconAndThemeColor() {
+                function getFavicon() {
                     try {
-                        // Get theme color from meta tag
-                        var themeColorMeta = document.querySelector('meta[name="theme-color"]');
-                        var themeColor = themeColorMeta ? themeColorMeta.getAttribute('content') : null;
-                        
                         // Get favicon with comprehensive preference order - improved selectors
                         var faviconSelectors = [
                             'link[rel="icon"][sizes="32x32"]',
@@ -1635,7 +1522,6 @@ struct WebView: NSViewRepresentable {
                         
                         return {
                             favicon: faviconURL,
-                            themeColor: themeColor,
                             success: true,
                             debug: {
                                 foundElements: foundElements,
@@ -1646,13 +1532,12 @@ struct WebView: NSViewRepresentable {
                     } catch (e) {
                         return {
                             favicon: window.location.origin + '/favicon.ico',
-                            themeColor: null,
                             success: false,
                             error: e.toString()
                         };
                     }
                 }
-                getFaviconAndThemeColor();
+                getFavicon();
                 """
 
             webView.evaluateJavaScript(script) { [weak self] result, error in
@@ -1677,10 +1562,6 @@ struct WebView: NSViewRepresentable {
                         if let fallback = fallbackURL {
                             self?.downloadFavicon(from: fallback, websiteHost: websiteHost)
                         }
-                    }
-
-                    if let themeColor = data["themeColor"] as? String {
-                        self?.updateThemeColor(themeColor)
                     }
                 }
             }
@@ -1817,47 +1698,20 @@ struct WebView: NSViewRepresentable {
             }.resume()
         }
 
-        private func updateThemeColor(_ themeColorString: String) {
-            DispatchQueue.main.async { [weak self] in
-                if let color = self?.parseColor(from: themeColorString) {
-                    // Update the tab's theme color
-                    if let tab = self?.parent.tab {
-                        tab.themeColor = color
-                    }
+        private func refreshThemeColor(from webView: WKWebView) {
+            guard let sourceURL = webView.url, NavigationResolver.isWebURL(sourceURL),
+                  let tab = parent.tab else { return }
+            let revision = documentRevision
+            webView.evaluateJavaScript(PageThemeColor.script, in: nil, in: .defaultClient) {
+                [weak self, weak webView, weak tab] result in
+                guard let self, let webView, let tab,
+                      self.documentRevision == revision, webView.url == sourceURL,
+                      self.parent.tab === tab else { return }
+                if case .success(let pixels) = result {
+                    tab.themeColor = PageThemeColor.color(from: pixels)
+                } else {
+                    tab.themeColor = nil
                 }
-            }
-        }
-
-        private func parseColor(from colorString: String) -> NSColor? {
-            let trimmed = colorString.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Handle hex colors
-            if trimmed.hasPrefix("#") {
-                let hex = String(trimmed.dropFirst())
-                return NSColor(hex: hex)
-            }
-
-            // Handle rgb() colors
-            if trimmed.hasPrefix("rgb(") && trimmed.hasSuffix(")") {
-                let values = String(trimmed.dropFirst(4).dropLast())
-                let components = values.split(separator: ",").compactMap {
-                    Double($0.trimmingCharacters(in: .whitespaces))
-                }
-                if components.count == 3 {
-                    return NSColor(
-                        red: components[0] / 255.0, green: components[1] / 255.0,
-                        blue: components[2] / 255.0, alpha: 1.0)
-                }
-            }
-
-            // Handle named colors (basic support)
-            switch trimmed.lowercased() {
-            case "blue": return .blue
-            case "red": return .red
-            case "green": return .green
-            case "black": return .black
-            case "white": return .white
-            default: return nil
             }
         }
 
@@ -1870,7 +1724,7 @@ struct WebView: NSViewRepresentable {
             // Check for CMD + click to open links in new background tabs
             if navigationAction.navigationType == .linkActivated,
                 !navigationAction.shouldPerformDownload,
-                navigationAction.modifierFlags.contains(.command),
+                (navigationAction.modifierFlags.contains(.command) || navigationAction.buttonNumber == 2),
                 let targetURL = navigationAction.request.url,
                 NavigationResolver.isWebURL(targetURL),
                 let sourceTab = parent.tab
@@ -1883,7 +1737,9 @@ struct WebView: NSViewRepresentable {
                     NotificationCenter.default.post(
                         name: Notification.Name("newTabInBackgroundRequested"),
                         object: nil,
-                        userInfo: ["url": targetURL, "sourceTabID": sourceTabID, "isIncognito": isIncognito]
+                        userInfo: ["url": targetURL, "sourceTabID": sourceTabID, "isIncognito": isIncognito,
+                            "activate": BrowserLinkDisposition.opensForeground(modifiers: navigationAction.modifierFlags,
+                                buttonNumber: navigationAction.buttonNumber)]
                     )
                 }
 
@@ -2120,22 +1976,6 @@ struct WebView: NSViewRepresentable {
                         "🔒 CSP: Link context menu message validation failed: \(error.description)")
                 }
 
-            case "timerCleanup":
-                let validationResult = CSPManager.shared.validateMessageInput(
-                    message, expectedHandler: "timerCleanup")
-
-                switch validationResult {
-                case .valid(let sanitizedBody):
-                    if let type = sanitizedBody["type"] as? String, type == "cleanupComplete" {
-                        let intervalsCleared = sanitizedBody["intervalsCleared"] as? Int ?? 0
-                        let timeoutsCleared = sanitizedBody["timeoutsCleared"] as? Int ?? 0
-                        print(
-                            "✅ Timer cleanup completed - Intervals: \(intervalsCleared), Timeouts: \(timeoutsCleared)"
-                        )
-                    }
-                case .invalid(let error):
-                    NSLog("🔒 CSP: Timer cleanup message validation failed: \(error.description)")
-                }
             case "agentBridge":
                 let validationResult = CSPManager.shared.validateMessageInput(
                     message, expectedHandler: "agentBridge")
@@ -2183,29 +2023,11 @@ struct WebView: NSViewRepresentable {
             }
             NotificationCenter.default.post(
                 name: .newTabInBackgroundRequested, object: nil,
-                userInfo: ["url": url, "sourceTabID": sourceTab.id, "isIncognito": sourceTab.isIncognito]
+                userInfo: ["url": url, "sourceTabID": sourceTab.id, "isIncognito": sourceTab.isIncognito,
+                    "activate": BrowserLinkDisposition.opensForeground(modifiers: navigationAction.modifierFlags,
+                        buttonNumber: navigationAction.buttonNumber)]
             )
             return nil
-        }
-
-        // MARK: - Public Methods for Timer Management
-        func cleanupWebViewTimers() {
-            guard let webView = webView else { return }
-
-            // Execute JavaScript timer cleanup
-            webView.evaluateJavaScript(
-                "if (window.cleanupAllTimers) { window.cleanupAllTimers(); }"
-            ) { result, error in
-                if let error = error {
-                    if AppLog.isVerboseEnabled {
-                        NSLog("Page timer cleanup failed (domain: \((error as NSError).domain), code: \((error as NSError).code))")
-                    }
-                } else {
-                    if AppLog.isVerboseEnabled {
-                        print("🧹 WebView timer cleanup executed successfully")
-                    }
-                }
-            }
         }
 
         // MARK: - WebView Responsiveness Protection
@@ -2278,6 +2100,7 @@ struct WebView: NSViewRepresentable {
         /// Performs intelligent content extraction with adaptive timing based on page readiness
         /// AI RESPONSIVENESS FIX: Runs on background thread to prevent WebView blocking
         private func performAdaptiveContentExtraction(webView: WKWebView, tab: Tab) async {
+            guard tab.isActive, tab.webView === webView else { return }
             // AI RESPONSIVENESS FIX: Start monitoring WebView responsiveness
             protectWebViewResponsiveness()
 
@@ -2303,6 +2126,7 @@ struct WebView: NSViewRepresentable {
             await waitForPageReadiness(webView: webView)
 
             while attemptCount < maxAttempts {
+                guard tab.isActive, tab.webView === webView else { return }
                 attemptCount += 1
 
                 let context = await ContextManager.shared.extractPageContext(
@@ -2422,17 +2246,11 @@ struct WebView: NSViewRepresentable {
                 webView.uiDelegate = nil
                 webView.configuration.userContentController.removeAllUserScripts()
 
-                // Clean up JavaScript timers before removing handlers
-                webView.evaluateJavaScript(
-                    "if (window.cleanupAllTimers) { window.cleanupAllTimers(); }")
-
                 // Remove script message handlers
                 webView.configuration.userContentController.removeScriptMessageHandler(
                     forName: "linkHover")
                 webView.configuration.userContentController.removeScriptMessageHandler(
                     forName: "linkContextMenu")
-                webView.configuration.userContentController.removeScriptMessageHandler(
-                    forName: "timerCleanup")
                 webView.configuration.userContentController.removeScriptMessageHandler(
                     forName: "agentBridge")
                 webView.configuration.userContentController.removeScriptMessageHandler(
@@ -2445,5 +2263,28 @@ struct WebView: NSViewRepresentable {
                 self.webView = nil
             }
         }
+    }
+}
+
+
+extension WebView {
+    init(tab: Tab, hoveredLink: Binding<String?>) {
+        self.init(
+            url: Binding(get: { tab.url }, set: { tab.url = $0 }),
+            canGoBack: Binding(get: { tab.canGoBack }, set: { tab.canGoBack = $0 }),
+            canGoForward: Binding(get: { tab.canGoForward }, set: { tab.canGoForward = $0 }),
+            isLoading: Binding(get: { tab.isLoading }, set: { tab.isLoading = $0 }),
+            estimatedProgress: Binding(get: { tab.estimatedProgress }, set: { tab.estimatedProgress = $0 }),
+            title: Binding(get: { tab.title }, set: { tab.title = $0 ?? "New Tab" }),
+            favicon: Binding(get: { tab.favicon }, set: { tab.favicon = $0 }),
+            hoveredLink: hoveredLink, mixedContentStatus: .constant(nil), tab: tab,
+            onNavigationAction: nil, onDownloadRequest: nil)
+    }
+}
+
+enum BrowserLinkDisposition {
+    static func opensForeground(modifiers: NSEvent.ModifierFlags, buttonNumber: Int) -> Bool {
+        if modifiers.contains(.shift) { return true }
+        return buttonNumber != 2 && !modifiers.contains(.command)
     }
 }

@@ -4,15 +4,17 @@ Three MP4 walkthroughs are attached to [PR #26](https://github.com/nuance-dev/We
 
 | Clip | Length | Captured states |
 | --- | --- | --- |
-| Glance | 26 seconds | Saturn in Web; Glance input; a Titan link; the loaded panel; pinned panel; Titan promoted to a full tab beside Saturn. |
-| Focus Mode | 20 seconds | Titan with browser controls; Focus Mode; the address field revealed with Command-L; the page again. |
-| Copy Quote | 20 seconds | A selected passage on `example.com`; a close-up of that selection; the passage and source pasted into an untitled TextEdit document. |
+| [Glance](https://github.com/user-attachments/assets/6658afa4-133c-45d5-ab10-c35ab70a5a21) | 26 seconds | Saturn in Web; Glance input; a Titan link; the loaded panel; pinned panel; Titan promoted to a full tab beside Saturn. |
+| [Focus Mode](https://github.com/user-attachments/assets/b9b3aa4b-4ab3-42b8-b3f1-65d57aee1315) | 20 seconds | Titan with browser controls; Focus Mode; the address field revealed with Command-L; the page again. |
+| [Copy Quote](https://github.com/user-attachments/assets/dff8d111-215e-4881-ba88-09bce2000da6) | 20 seconds | A selected passage on `example.com`; a close-up of that selection; the passage and source pasted into an untitled TextEdit document. |
 
 Panel and selection close-ups are labeled. No desktop composite, invented cursor movement or simulated app transition appears. The walkthroughs do not show the link context menu or validate the system-wide shortcut.
 
-The inspected frames contain public Wikipedia and `example.com` pages only. No desktop, menu bar, personal account, local path or credential appears. The exports are silent H.264, 1280 × 900 at 30 fps, each below 1 MB. File metadata is stripped. The README now uses an actual Glance screenshot.
+The inspected frames contain public Wikipedia and `example.com` pages only. No desktop, menu bar, personal account, local path or credential appears. The exports are silent H.264, 1280 × 900 at 30 fps, each below 1 MB. File metadata is stripped. The README retains the original Web banner; walkthroughs show the running app.
 
 ## Publishing
+
+The README embeds the same hosted clips. Put each `https://github.com/user-attachments/assets/…` URL on a line of its own, with blank lines around it. GitHub supports video in repository Markdown, including READMEs. Its Markdown API renders these three URLs as native video players; public range requests return MP4 content. Check playback and sizing on the published README and PR after updating them. [GitHub video support](https://github.blog/changelog/2021-05-13-video-uploads-now-generally-available/)
 
 GitHub CLI supports inline video attachments through `--attach`. Put `![](./glance.mp4)` in its own paragraph in the body file, then pass `--body-file` and a matching `--attach` flag for each clip. Partial upload failures can still update the PR; inspect before retrying. [CLI instructions](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli)
 

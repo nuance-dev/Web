@@ -1,28 +1,42 @@
+![Web — Experimental](https://github.com/user-attachments/assets/b54a2937-09d5-480a-9ca6-eae7967af30c)
+
 # Web
 
 A small native browser for macOS.
 
-<img src="docs/assets/glance.png" alt="Glance showing Wikipedia’s Titan article in a compact window" width="390">
+[What's changed](docs/releases/0.1.1.md) · [Build it](#build) · [Report a bug](https://github.com/nuance-dev/Web/issues)
 
-Press `⌃⌥Space` to open **Glance**, search or paste a link, and browse in your screen corner. You can also right-click a link and choose **Open in Glance**. Pin the page while you work, or open it in Web when you need more room. Closing Glance clears its temporary session.
+## A quick look
 
-[Walkthroughs](https://github.com/nuance-dev/Web/pull/26) · [What's changed](docs/releases/0.1.0.md) · [Report a bug](https://github.com/nuance-dev/Web/issues) · [Build it](#build)
+Short walkthroughs assembled from captured app states. [Capture details](docs/demo-plan.md)
 
-## Browsing
+### Glance
 
-- Compact native Liquid Glass chrome and a start page with saved pages and recent visits.
-- `⌘K` for tabs, commands and search.
-- Sidebar, top or hidden tabs; show the address bar or use Focus Mode from View.
-- Pin tabs, remove duplicates, and choose whether to restore your session.
-- Select a passage and choose **Copy Quote** to copy it with the page link.
-- Local AI with MLX, or your own OpenAI, Anthropic or Gemini API key.
-- Private tabs with separate temporary storage.
+Press `⌃⌥Space`. Look something up in your screen corner, pin it, or move it into a tab. Closing Glance clears its temporary session.
 
-Cloud page sharing is off until you enable it. The assistant can read and summarize; it cannot click, type or submit forms. [AI providers and privacy](docs/ai-providers.md)
+https://github.com/user-attachments/assets/6658afa4-133c-45d5-ab10-c35ab70a5a21
+
+### Focus Mode
+
+Press `⇧⌘B` for just the page. `⌘L` brings back the address field.
+
+https://github.com/user-attachments/assets/b9b3aa4b-4ab3-42b8-b3f1-65d57aee1315
+
+### Copy Quote
+
+Select a passage and choose **Copy Quote**. Paste the words and their source together.
+
+https://github.com/user-attachments/assets/dff8d111-215e-4881-ba88-09bce2000da6
+
+## Make room for the page
+
+Keep tabs on the side, on top, or hidden. Find tabs and commands with `⌘K`. Pin what you need, remove duplicates, and turn on session restore if you want to pick up where you left off.
+
+Private tabs use separate temporary storage. AI runs locally with MLX, or with your own OpenAI, Anthropic or Gemini API key. Cloud page sharing starts off. The assistant can read and summarize; it cannot click, type or submit forms. [AI providers and privacy](docs/ai-providers.md)
 
 ## Preview
 
-Web 0.1.0 is a development preview. Local MLX generation and Stop are verified; cloud completions and wider browser compatibility need more testing. [Validation](docs/validation.md) · [Security review](docs/security-audit.md) · [Browser gap](docs/product-direction.md)
+Web 0.1.1 is a development preview. Local MLX generation and Stop are verified; cloud completions and wider browser compatibility need more testing. [Validation](docs/validation.md) · [Security review](docs/security-audit.md) · [Browser gap](docs/product-direction.md)
 
 ## Build
 
@@ -45,7 +59,8 @@ xcodebuild -project Web.xcodeproj -scheme Web \
   -only-testing:WebTests CODE_SIGNING_ALLOWED=NO test
 ```
 
-## Shortcuts
+<details>
+<summary>Keyboard shortcuts</summary>
 
 | Action | Shortcut |
 | --- | --- |
@@ -55,6 +70,8 @@ xcodebuild -project Web.xcodeproj -scheme Web \
 | Private tab | `⇧⌘N` |
 | Close / reopen tab | `⌘W` / `⇧⌘T` |
 | Address | `⌘L` |
+| Move tabs between sidebar and top | `⌘S` |
+| Show / hide tabs | `⇧⌘S` |
 | Show / hide address bar | `⇧⌘H` |
 | Focus Mode | `⇧⌘B` |
 | Find | `⌘F` |
@@ -63,5 +80,7 @@ xcodebuild -project Web.xcodeproj -scheme Web \
 | History | `⌘Y` |
 | Downloads | `⇧⌘J` |
 | Assistant | `⇧⌘A` |
+
+</details>
 
 Built with SwiftUI, WebKit and [MLX](https://github.com/ml-explore/mlx-swift). [MIT license](LICENSE).

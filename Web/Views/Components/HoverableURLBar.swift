@@ -2,31 +2,32 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// An address field for focus mode. Keyboard access is immediate; pointer access stays at the top edge.
+/// A layout row that makes room for its address field without covering the page.
 struct HoverableURLBar: View {
   let tabID: UUID
   let themeColor: NSColor?
   let onSubmit: (String) -> Void
   @ObservedObject var tabManager: TabManager
   var showsWindowControls = false
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var visible = false
   @State private var hovering = false
+  @State private var hoveringEdge = false
   @State private var localURL = ""
   @State private var localTitle = ""
   @State private var editingText = ""
   @State private var suggestions: [BrowserAddressSuggestion] = []
   @State private var selectedSuggestion = -1
   @State private var hideTask: Task<Void, Never>?
+  @State private var revealTask: Task<Void, Never>?
   @StateObject private var windowReference = BrowserWindowReference()
   @FocusState private var focused: Bool
   @ObservedObject private var synchronizer = URLSynchronizer.shared
 
   var body: some View {
-    VStack(spacing: 3) {
-      // A small edge target avoids covering the website with a transparent hover layer.
+    VStack(spacing: 0) {
+      // This strip has its own four points above WebKit, not an overlay on the page.
       Color.clear.frame(height: 4).contentShape(Rectangle())
-        .onHover { if $0 { reveal(animated: true) } }
+        .onHover(perform: hoverEdge)
       if visible {
         VStack(spacing: 0) {
           HStack(spacing: 5) {
@@ -118,15 +119,15 @@ struct HoverableURLBar: View {
         }
         .glassEffect(.regular, in: .rect(cornerRadius: 10))
         .padding(.horizontal, 5)
+        .frame(maxWidth: 780)
         .onHover { value in
           hovering = value
           if value { hideTask?.cancel() } else { scheduleHide() }
         }
-        .transition(.opacity)
+        .padding(.bottom, 6)
       }
     }
-    .frame(maxWidth: 780)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .frame(maxWidth: .infinity)
     .background(BrowserWindowReader(reference: windowReference))
     .onReceive(
       tabManager.activeTab?.$url.map { $0?.absoluteString ?? "" }.eraseToAnyPublisher()
@@ -146,7 +147,10 @@ struct HoverableURLBar: View {
       NotificationCenter.default.post(name: .hoverableURLBarDismissed, object: nil)
     }
     .onChange(of: tabID) { _, _ in dismiss() }
-    .onDisappear { hideTask?.cancel() }
+    .onDisappear {
+      hideTask?.cancel()
+      revealTask?.cancel()
+    }
   }
 
   private func updateSuggestions() {
@@ -156,13 +160,31 @@ struct HoverableURLBar: View {
       ? BrowserAddressSuggestion.matches(editingText) : []
   }
 
-  private func reveal(animated: Bool) {
+  private func hoverEdge(_ entered: Bool) {
+    hoveringEdge = entered
+    revealTask?.cancel()
+    if entered {
+      hideTask?.cancel()
+      guard !visible else { return }
+      revealTask = Task { @MainActor in
+        try? await Task.sleep(for: .milliseconds(280))
+        guard !Task.isCancelled, hoveringEdge else { return }
+        reveal()
+      }
+    } else {
+      scheduleHide()
+    }
+  }
+
+  private func reveal() {
     hideTask?.cancel()
-    withAnimation(animated && !reduceMotion ? .easeOut(duration: 0.16) : nil) { visible = true }
+    revealTask?.cancel()
+    // Resize the viewport once; do not animate WebKit's remote layers.
+    visible = true
   }
 
   private func focus() {
-    reveal(animated: false)
+    reveal()
     focused = true
     DispatchQueue.main.async {
       NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
@@ -171,16 +193,17 @@ struct HoverableURLBar: View {
 
   private func scheduleHide() {
     hideTask?.cancel()
-    guard !focused && !hovering else { return }
+    guard visible && !focused && !hovering && !hoveringEdge else { return }
     hideTask = Task { @MainActor in
       try? await Task.sleep(for: .milliseconds(650))
-      guard !Task.isCancelled, !focused, !hovering else { return }
-      withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { visible = false }
+      guard !Task.isCancelled, !focused, !hovering, !hoveringEdge else { return }
+      visible = false
     }
   }
 
   private func dismiss() {
     hideTask?.cancel()
+    revealTask?.cancel()
     focused = false
     visible = false
     suggestions = []

@@ -197,7 +197,9 @@ class TabManager: ObservableObject {
         }
         
         tabs.append(tab)
-        // Note: We do NOT call setActiveTab(tab) for background tabs
+        // User-opened background tabs start immediately through the same configured
+        // lifecycle as visible tabs. Restored tabs remain lazy until selected.
+        WebView.preload(tab)
         
         // Manage memory by hibernating old tabs
         manageTabMemory()

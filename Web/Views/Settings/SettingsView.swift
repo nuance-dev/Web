@@ -165,6 +165,7 @@ struct BasicSecuritySettingsView: View {
 struct AppearanceSettingsView: View {
     @AppStorage("tabDisplayMode") private var tabDisplay: TabDisplayMode = .sidebar
     @AppStorage("hideTopBar") private var hideTopBar = false
+    @AppStorage("matchPageColor") private var matchPageColor = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -179,6 +180,8 @@ struct AppearanceSettingsView: View {
                 Divider()
                 SettingsToggle(title: "Show address bar", detail: "⌘L always brings the address into focus.",
                     isOn: Binding(get: { !hideTopBar }, set: { hideTopBar = !$0 }))
+                SettingsToggle(title: "Match page color", detail: "Use the page’s color behind browser controls.",
+                    isOn: $matchPageColor)
             }
             SettingsCard("System appearance", icon: "circle.lefthalf.filled") {
                 SettingsValueRow(title: "Color scheme", value: "Follows macOS")

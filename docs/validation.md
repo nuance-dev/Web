@@ -1,14 +1,18 @@
 # Release validation
 
-September 13, 2026. Web 0.1.0, macOS, Apple Silicon.
+September 13, 2026. Web 0.1.1, macOS, Apple Silicon.
 
-The latest aggregate run passed **65 of 65 tests**. The unsigned Release build also succeeded with `CODE_SIGNING_ALLOWED=NO`.
+The final Debug aggregate run passed **87 of 87 tests**, with no failures or skips, including the native page-container and appearance fixes. The Release build succeeded and its local signature was verified.
 
 These are local results. A [GitHub Actions template](ci/README.md) is prepared; hosted CI is not active.
 
 | Test suite | Passed | Coverage |
 | --- | ---: | --- |
 | AIProviderTests | 12 | Consent, source boundaries, provider requests, local streaming and cancellation |
+| AssistantMarkdownTests | 8 | Block formatting, tables, safe links, inert images and bounded output |
+| AssistantMarkdownRendererTests | 3 | Latest-value streaming, immediate completion and canceled views |
+| BackgroundNavigationTests | 4 | Native background loads, private storage, view reuse, page timers and link modifiers |
+| NativePageContainerTests | 1 | Resizing preserves the configured WebView, coordinator and native clipping |
 | SessionStoreTests | 7 | Bounded archives, private exclusion, window lifecycle and restore position |
 | TabManagerTests | 7 | Tab updates, private duplication, window cleanup, pinning and bulk close |
 | BrowserSecurityTests | 5 | Credential origins, bridge validation and download filenames |
@@ -20,10 +24,24 @@ These are local results. A [GitHub Actions template](ci/README.md) is prepared; 
 | PanelWindowIntegrationTests | 4 | Real AppKit windows, native sheets and missing-key-window routing |
 | NavigationResolverTests | 3 | Addresses, encoded search queries and rejected schemes |
 | PeekGeometryTests | 2 | Corner anchoring and small-screen bounds |
+| PageThemeColorTests | 6 | Opaque sRGB colors, invalid pixels, top-edge consensus and page-color fallback |
 
 A locally signed build loaded a WebKit page and generated text through MLX without the `allow-jit` entitlement. A fresh local request returned the correct arithmetic result, and Stop interrupted a longer response. Cloud completions and billing reconciliation remain unverified. No credentials were copied or printed.
 
-Installed-build checks passed for normal and private link promotion from Glance, private `target="_blank"` pages, Settings after Glance dismissal, Focus Mode, navigation revealed with `⌘L`, and Copy Quote with its source URL. The command palette focused on open, filtered to the correct action and opened Settings. A native text attachment retained its exact bytes and macOS quarantine attribute. First navigation, same-tab article changes and cross-origin navigation painted without resizing after moving Liquid Glass behind the WebKit content.
+Installed-build checks passed for normal and private link promotion from Glance, private `target="_blank"` pages, Settings after Glance dismissal, Focus Mode, navigation revealed with `⌘L`, and Copy Quote with its source URL. The command palette focused on open, filtered to the correct action and opened Settings. A native text attachment retained its exact bytes and macOS quarantine attribute. First navigation, same-tab article changes and cross-origin navigation painted without resizing.
+
+Additional installed-app checks:
+
+| Area | Observed result |
+| --- | --- |
+| Tabs | `⌘S` moved tabs; `⇧⌘S` hid and restored their previous top position. |
+| Hidden controls | `⇧⌘B` showed the page alone; `⌘L` revealed the address in its own row above the website; `⇧⌘H` hid only the address bar. |
+| Assistant | Opening or closing it in one window left the other window unchanged. The page card showed its title and icon, with one open or close control. Private-page options stated that the page is never shared. |
+| Find and commands | `⌘L` followed by `⌘F` focused Find and accepted a search. Help → Commands and Shortcuts opened the palette with the correct keys. |
+
+The shorter welcome places **Summarize this page** above the composer. In the final installed build, native page clipping kept WebKit painted while opening or closing the assistant, switching between top and sidebar tabs, entering Focus Mode, and revealing the address with `⌘L`. Focus Mode hid an open assistant and restored it on exit. Window zoom and restore kept the page fitted to the available height, without a gray gap or reload.
+
+In the final signed Release, Wikipedia remained legible with page matching off (dark controls, light text) and on (white frame and controls, dark text), including top tabs. Navigating to NASA restored a black frame and dark controls. Matching changed the browser frame without changing the webpage's colors.
 
 The Glance shortcut works with input sent directly to Web, and native global registration succeeds. Activation from a physical keyboard while another app is active remains unverified; app-targeted automation does not exercise the same event path.
 

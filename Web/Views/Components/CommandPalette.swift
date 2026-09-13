@@ -9,6 +9,10 @@ struct CommandPalette: View {
 
   private var items: [PaletteItem] {
     let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let displayMode = TabDisplayMode(
+      rawValue: UserDefaults.standard.string(forKey: "tabDisplayMode") ?? ""
+    ) ?? .sidebar
+    let addressBarHidden = UserDefaults.standard.bool(forKey: "hideTopBar")
     var results: [PaletteItem] = []
     if let manager = tabManager {
       let matchingTabs = manager.tabs.filter {
@@ -52,9 +56,23 @@ struct CommandPalette: View {
         "peek", "Open Glance", "rectangle.bottomthird.inset.filled",
         PeekController.shared.shortcut.label, .togglePeekRequested),
       command("new", "New tab", "plus", "⌘T", .newTabRequested),
+      command("close", "Close tab", "xmark", "⌘W", .closeTabRequested),
       command("private", "New private tab", "eye.slash", "⇧⌘N", .newIncognitoTabRequested),
       command("reopen", "Reopen closed tab", "arrow.uturn.backward", "⇧⌘T", .reopenTabRequested),
-      PaletteItem(id: "bookmarks", title: "Bookmarks", icon: "bookmark", section: "Actions") {
+      command("find", "Find in page", "text.magnifyingglass", "⌘F", .findInPageRequested),
+      command("focus", "Focus Mode", "arrow.up.left.and.arrow.down.right", "⇧⌘B", .toggleEdgeToEdge),
+      command(
+        "move-tabs", displayMode == .sidebar ? "Move tabs to top" : "Move tabs to sidebar",
+        "sidebar.left", "⌘S", .toggleTabDisplay),
+      command(
+        "tab-visibility", displayMode == .hidden ? "Show tabs" : "Hide tabs",
+        "rectangle.topthird.inset.filled", "⇧⌘S", .toggleTabVisibility),
+      command(
+        "address-visibility", addressBarHidden ? "Show address bar" : "Hide address bar",
+        "rectangle.topthird.inset.filled", "⇧⌘H", .toggleTopBar),
+      PaletteItem(
+        id: "bookmarks", title: "Bookmarks", icon: "bookmark", section: "Actions", shortcut: "⇧⌘D"
+      ) {
         KeyboardShortcutHandler.shared.showBookmarksPanel = true
       },
       PaletteItem(
@@ -63,13 +81,14 @@ struct CommandPalette: View {
         KeyboardShortcutHandler.shared.showHistoryPanel = true
       },
       PaletteItem(
-        id: "downloads", title: "Downloads", icon: "arrow.down.circle", section: "Actions"
+        id: "downloads", title: "Downloads", icon: "arrow.down.circle", section: "Actions",
+        shortcut: "⇧⌘J"
       ) {
         KeyboardShortcutHandler.shared.showDownloadsPanel = true
       },
       command("summary", "Summarize this page", "text.alignleft", nil, .performTLDRRequested),
       command("ask", "Ask about this page", "bubble.left", nil, .performAskRequested),
-      command("assistant", "Toggle assistant", "sidebar.right", nil, .toggleAISidebar),
+      command("assistant", "Toggle assistant", "sidebar.right", "⇧⌘A", .toggleAISidebar),
       command("address", "Focus address bar", "magnifyingglass", "⌘L", .focusAddressBarRequested),
       command("settings", "Settings", "gearshape", "⌘,", .showSettingsRequested),
     ]

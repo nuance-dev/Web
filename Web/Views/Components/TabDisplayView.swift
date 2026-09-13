@@ -8,13 +8,18 @@ enum TabDisplayMode: String, CaseIterable {
 
 struct TabDisplayView: View {
     @ObservedObject var tabManager: TabManager
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("tabDisplayMode") private var displayMode: TabDisplayMode = .sidebar
+    @AppStorage("lastVisibleTabDisplayMode") private var lastVisibleDisplayMode: TabDisplayMode = .sidebar
     @AppStorage("hideTopBar") private var hideTopBar = false
+    @AppStorage("matchPageColor") private var matchPageColor = false
     @State private var focusMode = false
+    @State private var assistantWasExpanded = false
     @StateObject private var windowReference = BrowserWindowReference()
+    @StateObject private var assistantPresentation = AssistantPresentationState()
 
     private let commands: [Notification.Name] = [
-        .toggleTabDisplay, .toggleEdgeToEdge, .newTabRequested, .newTabInBackgroundRequested,
+        .toggleTabDisplay, .toggleTabVisibility, .toggleEdgeToEdge, .newTabRequested, .newTabInBackgroundRequested,
         .closeTabRequested, .reopenTabRequested, .newIncognitoTabRequested, .nextTabRequested, .previousTabRequested,
         .selectTabByNumber, .createNewTabWithURL, .toggleTopBar, .navigateCurrentTab,
         .reloadRequested, .bookmarkCurrentPageRequested
@@ -24,35 +29,56 @@ struct TabDisplayView: View {
         ZStack(alignment: .top) {
             VStack(spacing: 0) {
                 if displayMode == .topBar && !focusMode {
-                    TopBarTabView(tabManager: tabManager)
+                    VStack(spacing: 0) {
+                        TopBarTabView(tabManager: tabManager)
+                        if !hideTopBar {
+                            BrowserToolbar(tabManager: tabManager, showsWindowControls: false)
+                        }
+                    }
+                    .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                    .environment(\.colorScheme, chromeColorScheme)
+                    .padding(.bottom, hideTopBar ? 0 : 6)
+                    .zIndex(2)
                 }
-                if !focusMode && !hideTopBar {
-                    BrowserToolbar(tabManager: tabManager,
-                                   showsWindowControls: displayMode != .topBar)
+                if displayMode != .topBar && !focusMode && !hideTopBar {
+                    BrowserToolbar(tabManager: tabManager, showsWindowControls: true)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                        .environment(\.colorScheme, chromeColorScheme)
+                        .padding(.bottom, 6)
                         .zIndex(2)
+                }
+                if hideTopBar || focusMode {
+                    if let tab = tabManager.activeTab {
+                        HoverableURLBar(tabID: tab.id, themeColor: tab.themeColor,
+                            onSubmit: { input in
+                                guard let url = NavigationResolver.resolve(input) else { return }
+                                tab.navigate(to: url)
+                            }, tabManager: tabManager,
+                            showsWindowControls: focusMode || displayMode != .topBar)
+                            .environment(\.colorScheme, chromeColorScheme)
+                    }
                 }
                 HStack(spacing: 0) {
                     if displayMode == .sidebar && !focusMode {
                         SidebarTabView(tabManager: tabManager)
+                            .environment(\.colorScheme, chromeColorScheme)
+                            .padding(.trailing, 6)
                     }
                     WebContentArea(tabManager: tabManager)
                     AISidebar(tabManager: tabManager)
+                        .environment(\.colorScheme, chromeColorScheme)
                 }
             }
-            if hideTopBar || focusMode {
-                if let tab = tabManager.activeTab {
-                    HoverableURLBar(tabID: tab.id, themeColor: tab.themeColor,
-                        onSubmit: { input in
-                            guard let url = NavigationResolver.resolve(input) else { return }
-                            tab.navigate(to: url)
-                        }, tabManager: tabManager,
-                        showsWindowControls: focusMode || displayMode != .topBar)
-                }
-            }
+            .padding(focusMode ? 0 : 6)
             SecurityWarningSheet()
             SafeBrowsingWarningSheet()
         }
+        .environmentObject(assistantPresentation)
+        .background(frameColor)
         .background(BrowserWindowReader(reference: windowReference))
+        .onChange(of: displayMode, initial: true) { _, mode in
+            if mode != .hidden { lastVisibleDisplayMode = mode }
+        }
         .onReceive(Publishers.MergeMany(commands.map { NotificationCenter.default.publisher(for: $0) })) { notification in
             if let sourceTabID = notification.userInfo?["sourceTabID"] as? UUID {
                 guard tabManager.tabs.contains(where: { $0.id == sourceTabID }) else { return }
@@ -63,12 +89,51 @@ struct TabDisplayView: View {
         }
     }
 
+    private var matchedPageColor: NSColor? {
+        guard matchPageColor, tabManager.activeTab?.url != nil,
+              let color = PageThemeColor.usable(tabManager.activeTab?.themeColor)
+        else { return nil }
+        return color
+    }
+
+    private var frameColor: Color {
+        Color(nsColor: matchedPageColor ?? .windowBackgroundColor)
+    }
+
+    private var chromeColorScheme: ColorScheme {
+        guard let color = matchedPageColor else { return colorScheme }
+        func linear(_ channel: CGFloat) -> Double {
+            let value = Double(channel)
+            return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(color.redComponent)
+            + 0.7152 * linear(color.greenComponent)
+            + 0.0722 * linear(color.blueComponent)
+        // Choose the palette with greater black/white contrast. Scope it to chrome
+        // so matching the frame never changes the website's appearance.
+        return luminance > 0.179 ? .light : .dark
+    }
+
     private func handle(_ notification: Notification) {
         switch notification.name {
         case .toggleTabDisplay:
             displayMode = displayMode == .sidebar ? .topBar : .sidebar
+        case .toggleTabVisibility:
+            if displayMode == .hidden {
+                displayMode = lastVisibleDisplayMode == .hidden ? .sidebar : lastVisibleDisplayMode
+            } else {
+                lastVisibleDisplayMode = displayMode
+                displayMode = .hidden
+            }
         case .toggleEdgeToEdge:
-            focusMode.toggle()
+            if focusMode {
+                focusMode = false
+                if assistantWasExpanded { assistantPresentation.isExpanded = true }
+            } else {
+                assistantWasExpanded = assistantPresentation.isExpanded
+                assistantPresentation.isExpanded = false
+                focusMode = true
+            }
         case .toggleTopBar:
             hideTopBar.toggle()
         case .newTabRequested:
@@ -82,7 +147,11 @@ struct TabDisplayView: View {
                 let sourceTabID = notification.userInfo?["sourceTabID"] as? UUID
                 let source = tabManager.tabs.first(where: { $0.id == sourceTabID })
                 let isPrivate = source?.isIncognito ?? tabManager.activeTab?.isIncognito ?? false
-                _ = tabManager.createNewTabInBackground(url: url, isIncognito: isPrivate)
+                if notification.userInfo?["activate"] as? Bool == true {
+                    _ = tabManager.createNewTab(url: url, isIncognito: isPrivate)
+                } else {
+                    _ = tabManager.createNewTabInBackground(url: url, isIncognito: isPrivate)
+                }
             }
         case .closeTabRequested:
             if let tab = tabManager.activeTab { tabManager.closeTab(tab) }
@@ -153,7 +222,7 @@ struct WebContentArea: View {
     }
 }
 
-/// One continuous toolbar aligns window controls and navigation above the page and rail.
+/// A bounded glass toolbar keeps navigation separate from the page surface.
 private struct BrowserToolbar: View {
     @ObservedObject var tabManager: TabManager
     var showsWindowControls: Bool

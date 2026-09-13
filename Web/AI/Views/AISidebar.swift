@@ -1,6 +1,12 @@
 import Combine
 import SwiftUI
 
+/// Owned by one browser window and shared by its assistant and navigation controls.
+@MainActor
+final class AssistantPresentationState: ObservableObject {
+    @Published var isExpanded = false
+}
+
 /// One read-only conversation per browser window.
 struct AISidebar: View {
     @ObservedObject var tabManager: TabManager
@@ -8,9 +14,9 @@ struct AISidebar: View {
     @ObservedObject private var runner = SimplifiedMLXRunner.shared
     @StateObject private var assistant: AIAssistant
     @StateObject private var windowReference = BrowserWindowReference()
+    @EnvironmentObject private var presentation: AssistantPresentationState
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var inputFocused: Bool
-    @State private var isExpanded = false
     @State private var input = ""
     @State private var responseTask: Task<Void, Never>?
     @State private var showingPageOptions = false
@@ -37,6 +43,7 @@ struct AISidebar: View {
     }
 
     private var isBusy: Bool { responseTask != nil || assistant.isProcessing }
+    private var isExpanded: Bool { presentation.isExpanded }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -53,18 +60,28 @@ struct AISidebar: View {
                         }
                         transcript
                         if let error = assistant.lastError { errorNotice(error) }
+                        if assistant.messages.isEmpty && assistant.isInitialized && hasPage {
+                            Button(action: summarizePage) {
+                                Label("Summarize this page", systemImage: "text.alignleft")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                            }
+                            .buttonStyle(.plain)
+                            .glassEffect(.regular.interactive(), in: .capsule)
+                            .disabled(isBusy)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                         composer
                     }
                     .padding(10)
                 }
                 .frame(width: 326)
-                .glassEffect(.regular, in: .rect(cornerRadius: 18))
-                .padding(.vertical, 4)
-                .padding(.trailing, 4)
+                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                .padding(.leading, 6)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .frame(width: isExpanded ? 330 : 0)
+        .frame(width: isExpanded ? 332 : 0)
         .frame(maxHeight: .infinity)
         .background(BrowserWindowReader(reference: windowReference))
         .onReceive(NotificationCenter.default.publisher(for: .toggleAISidebar)) { _ in
@@ -117,10 +134,12 @@ struct AISidebar: View {
             .fixedSize()
             .help("Assistant options")
             Button { setExpanded(false) } label: {
-                Image(systemName: "sidebar.right").frame(width: 28, height: 28)
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
             }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: .circle)
+            .buttonStyle(BrowserControlStyle())
             .help("Close assistant")
             .accessibilityLabel("Close assistant")
         }
@@ -162,11 +181,14 @@ struct AISidebar: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
-                    if assistant.messages.isEmpty { welcome }
+                    if assistant.messages.isEmpty && assistant.isInitializing { loadingStatus }
                     ForEach(assistant.messages) { message in
                         AssistantMessageRow(message: message,
                             streamingText: assistant.animationState.streamingMessageId == message.id
-                                ? assistant.streamingText : nil)
+                                ? assistant.streamingText : nil) { url in
+                                    _ = tabManager.createNewTab(url: url,
+                                        isIncognito: tabManager.activeTab?.isIncognito ?? false)
+                                }
                     }
                     Color.clear.frame(height: 1).id("latest")
                 }
@@ -185,32 +207,6 @@ struct AISidebar: View {
             }
         }
         .frame(maxHeight: .infinity)
-    }
-
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Image(systemName: "text.bubble")
-                .font(.system(size: 25, weight: .light)).foregroundStyle(.secondary)
-            Text("A little help, right here.").font(.system(size: 20, weight: .medium))
-            Text(providers.currentProvider?.providerType == .local
-                 ? "Ask a question or read a page together. Replies stay on this Mac."
-                 : "Ask a question. You choose whether to share the page.")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if assistant.isInitializing {
-                loadingStatus
-            } else if assistant.isInitialized {
-                Button(action: summarizePage) {
-                    Label("Summarize this page", systemImage: "text.alignleft")
-                        .font(.system(size: 12, weight: .medium))
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                }
-                .buttonStyle(.plain)
-                .glassEffect(.regular.interactive(), in: .capsule)
-                .disabled(!hasPage || isBusy)
-            }
-        }
-        .padding(.top, 28)
     }
 
     private var loadingStatus: some View {
@@ -255,15 +251,8 @@ struct AISidebar: View {
                 .onSubmit { sendMessage() }
                 .accessibilityLabel("Message to assistant")
             HStack(spacing: 6) {
-                Button { showingPageOptions.toggle() } label: {
-                    Label(includesPage ? "Page included" : "Page off",
-                          systemImage: includesPage ? "doc.text" : "doc")
-                        .font(.system(size: 11))
-                        .foregroundStyle(includesPage ? .primary : .secondary)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingPageOptions, arrowEdge: .bottom) { pageOptions }
-                Spacer()
+                pageAttachment
+                Spacer(minLength: 0)
                 if isBusy {
                     Text("Responding").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
@@ -284,11 +273,70 @@ struct AISidebar: View {
         .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
+    private var pageAttachment: some View {
+        Button { showingPageOptions.toggle() } label: {
+            if includesPage, let tab = tabManager.activeTab {
+                HStack(spacing: 7) {
+                    FaviconView(tab: tab, size: 14)
+                        .frame(width: 24, height: 28)
+                        .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 4))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 4)
+                                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 0.5)
+                        }
+                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(pageTitle(tab)).font(.system(size: 11, weight: .medium))
+                        Text(tab.url?.host ?? "Current page")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    .lineLimit(1)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 7)
+                .frame(height: 38)
+                .frame(maxWidth: 180, alignment: .leading)
+                .background(Color.primary.opacity(0.045), in: .rect(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.5)
+                }
+            } else {
+                Label(hasPage ? "Attach page" : "Page context",
+                      systemImage: hasPage ? "doc.badge.plus" : "doc")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 5)
+            }
+        }
+        .buttonStyle(BrowserControlStyle())
+        .accessibilityLabel(pageAttachmentAccessibilityLabel)
+        .accessibilityHint("Opens page sharing options")
+        .help(includesPage ? "Page included. Change sharing options" : "Page sharing options")
+        .popover(isPresented: $showingPageOptions, arrowEdge: .bottom) { pageOptions }
+    }
+
+    private func pageTitle(_ tab: Tab) -> String {
+        let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty || title == "New Tab" ? (tab.url?.host ?? "Current page") : title
+    }
+
+    private var pageAttachmentAccessibilityLabel: String {
+        if includesPage, let tab = tabManager.activeTab {
+            return "Included page: \(pageTitle(tab))"
+        }
+        return hasPage ? "Attach current page" : "Page context unavailable"
+    }
+
     @ViewBuilder private var pageOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Page context").font(.headline)
             if tabManager.activeTab?.isIncognito == true {
                 Text("Private pages are never shared with the assistant.")
+            } else if !hasPage {
+                Text("Open a webpage to include it in your message.")
             } else if let provider = providers.currentProvider, provider.providerType == .external {
                 CloudPageSharingToggle(providerID: provider.providerId, providerName: provider.displayName)
             } else {
@@ -302,8 +350,7 @@ struct AISidebar: View {
     }
 
     private func setExpanded(_ expanded: Bool) {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { isExpanded = expanded }
-        NotificationCenter.default.post(name: .aISidebarStateChanged, object: expanded)
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { presentation.isExpanded = expanded }
         inputFocused = expanded
         if expanded { Task { await assistant.initialize() } }
     }
@@ -345,6 +392,7 @@ struct AISidebar: View {
 private struct AssistantMessageRow: View {
     let message: ConversationMessage
     let streamingText: String?
+    let openLink: (URL) -> Void
     private var content: String { streamingText ?? message.content }
 
     var body: some View {
@@ -359,10 +407,8 @@ private struct AssistantMessageRow: View {
                     Text("Thinking…").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             } else {
-                Text((try? AttributedString(markdown: content,
-                    options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(content))
-                    .font(.system(size: 13)).lineSpacing(4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                AssistantMarkdownView(content: content, isStreaming: streamingText != nil, openLink: openLink)
+                    .equatable()
             }
         }
         .textSelection(.enabled)
