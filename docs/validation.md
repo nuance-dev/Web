@@ -1,8 +1,10 @@
 # Release validation
 
-September 13, 2026. Web 0.1.1, macOS, Apple Silicon.
+September 13, 2026. Web 0.1.2, macOS, Apple Silicon.
 
-The final Debug aggregate run passed **87 of 87 tests**, with no failures or skips, including the native page-container and appearance fixes. The Release build succeeded and its local signature was verified.
+The final Debug aggregate run passed **87 of 87 tests**, with no failures or skips, including the native page-container and appearance fixes, with the new-tab light and assistant globe compiled into the app. The Release build succeeded and its local signature was verified.
+
+In 0.1.2, a new tab accepted a URL immediately after opening. The installed Release showed the local-model loading globe and the request activity globe beside the page card, with the website remaining painted. Gemma 3 1B then answered a question about the attached NASA Saturn page correctly, and the activity indicator returned to idle. Source review confirmed bounded new-tab rendering, cancellation on typing and window deactivation, and the accessibility and Low Power Mode gates. The Appearance animation switch was turned off and restored on. These animation gates have not all been exercised with system settings. The final narrow-sidebar check keeps Thinking on one line; the AI walkthrough uses that corrected build.
 
 These are local results. A [GitHub Actions template](ci/README.md) is prepared; hosted CI is not active.
 
