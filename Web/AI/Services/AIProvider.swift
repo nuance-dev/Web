@@ -244,6 +244,9 @@ class AIProviderManager: ObservableObject {
                 }
             }
         }
+        if let configuration = CompatibleAPIConfiguration.load() {
+            availableProviders.append(CompatibleAPIProvider(configuration: configuration))
+        }
 
         // Set default provider
         if let savedProviderId = userDefaults.string(forKey: "selectedAIProvider"),
@@ -319,6 +322,48 @@ class AIProviderManager: ObservableObject {
         }
     }
 
+    /// Saving a server never selects it or reuses another provider's key or page consent.
+    func saveCompatibleAPI(_ configuration: CompatibleAPIConfiguration, key: String?, keepExistingKey: Bool) throws {
+        let previous = CompatibleAPIConfiguration.load()
+        if configuration.usesAPIKey {
+            if keepExistingKey {
+                guard previous?.baseURL == configuration.baseURL,
+                      try secureStorage.compatibleAPIKey(for: configuration) != nil else {
+                    throw AIProviderError.missingAPIKey("Custom API")
+                }
+            } else {
+                guard let key, !key.isEmpty else { throw AIProviderError.missingAPIKey("Custom API") }
+                try secureStorage.storeCompatibleAPIKey(key, for: configuration)
+            }
+        } else {
+            try secureStorage.storeCompatibleAPIKey(nil, for: configuration)
+        }
+        revokeCompatibleProvider()
+        configuration.save()
+        userDefaults.set(false, forKey: AIContextPolicy.sharingKey(for: configuration.providerID))
+        NotificationCenter.default.post(name: .aiPageSharingChanged, object: configuration.providerID)
+        availableProviders.append(CompatibleAPIProvider(configuration: configuration))
+    }
+
+    func removeCompatibleAPI() throws {
+        if let configuration = CompatibleAPIConfiguration.load() {
+            try secureStorage.storeCompatibleAPIKey(nil, for: configuration)
+            userDefaults.removeObject(forKey: AIContextPolicy.sharingKey(for: configuration.providerID))
+        }
+        revokeCompatibleProvider()
+        userDefaults.removeObject(forKey: CompatibleAPIConfiguration.defaultsKey)
+    }
+
+    private func revokeCompatibleProvider() {
+        availableProviders.compactMap { $0 as? CompatibleAPIProvider }.forEach { $0.revoke() }
+        availableProviders.removeAll { $0 is CompatibleAPIProvider }
+        if let current = currentProvider as? CompatibleAPIProvider {
+            current.revoke()
+            currentProvider = nil
+            userDefaults.removeObject(forKey: "selectedAIProvider")
+        }
+    }
+
     /// Update the selected model for the current provider
     func updateSelectedModel(_ model: AIModel) {
         guard let currentProvider else { return }
@@ -355,7 +400,7 @@ class ExternalAPIProvider: AIProvider {
 
     // MARK: - External Provider Properties
 
-    let apiProviderType: SecureKeyStorage.AIProvider
+    let apiProviderType: SecureKeyStorage.AIProvider?
     internal var apiKey: String?
     private let secureStorage = SecureKeyStorage.shared
     private var usageStats = AIUsageStatistics(
@@ -380,12 +425,15 @@ class ExternalAPIProvider: AIProvider {
     private let failureThresholdToOpenCircuit = 3
     private let circuitOpenSeconds: TimeInterval = 30
 
-    init(apiProviderType: SecureKeyStorage.AIProvider) {
+    init(apiProviderType: SecureKeyStorage.AIProvider?) {
         self.apiProviderType = apiProviderType
     }
 
     func initialize() async throws {
         // Retrieve API key from secure storage
+        guard let apiProviderType else {
+            throw AIProviderError.invalidConfiguration("This provider needs its own credential configuration.")
+        }
         apiKey = try secureStorage.retrieveAPIKey(for: apiProviderType)
 
         guard apiKey != nil else {

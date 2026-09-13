@@ -38,9 +38,11 @@
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	
-	<!-- HTTP browsing is permitted only in WebKit. Native networking keeps ATS defaults. -->
+	<!-- WebKit permits HTTP browsing. Custom API permits native HTTP only after loopback validation. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>

@@ -352,7 +352,15 @@ struct AISidebar: View {
             } else if !hasPage {
                 Text("Open a webpage to include it in your message.")
             } else if let provider = providers.currentProvider, provider.providerType == .external {
-                CloudPageSharingToggle(providerID: provider.providerId, providerName: provider.displayName)
+                if let compatible = provider as? CompatibleAPIProvider {
+                    Text(compatible.configuration.baseURL.absoluteString)
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    CloudPageSharingToggle(providerID: provider.providerId,
+                        providerName: compatible.configuration.baseURL.host ?? provider.displayName)
+                } else {
+                    CloudPageSharingToggle(providerID: provider.providerId, providerName: provider.displayName)
+                }
             } else {
                 Toggle("Include this page", isOn: $includeLocalPage)
                     .toggleStyle(.switch).controlSize(.small)

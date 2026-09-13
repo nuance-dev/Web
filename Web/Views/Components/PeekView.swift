@@ -88,8 +88,6 @@ struct PeekView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
         .onAppear { inputFocused = true }
         .onChange(of: controller.focusRequest) { _, _ in inputFocused = true }
     }

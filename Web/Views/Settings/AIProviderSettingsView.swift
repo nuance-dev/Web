@@ -9,6 +9,13 @@ struct AIProviderSettingsView: View {
     @State private var status: String?
     @State private var keyError: String?
     @State private var switchingName: String?
+    @State private var showingCompatibleSheet = false
+    @State private var compatibleEndpoint = ""
+    @State private var compatibleModel = ""
+    @State private var compatibleKey = ""
+    @State private var keepCompatibleKey = false
+    @State private var compatibleNoKey = false
+    @State private var compatibleError: String?
     private let storage = SecureKeyStorage.shared
 
     var body: some View {
@@ -30,6 +37,20 @@ struct AIProviderSettingsView: View {
                             Spacer()
                             Button("Connect") { beginKeyEntry(type) }.buttonStyle(.glass)
                         }
+                    }
+                }
+                Divider()
+                if let compatible = providers.availableProviders.compactMap({ $0 as? CompatibleAPIProvider }).first {
+                    providerRow(compatible, detail: compatible.configuration.connectionLabel)
+                } else {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Custom API").fontWeight(.medium)
+                            Text("Connect an OpenAI-compatible server.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Connect") { beginCompatibleEntry() }
+                            .buttonStyle(.glass).disabled(providers.isInitializing)
                     }
                 }
                 if providers.isInitializing {
@@ -69,7 +90,15 @@ struct AIProviderSettingsView: View {
                     }
                     if provider.providerType == .external {
                         Divider()
-                        CloudPageSharingToggle(providerID: provider.providerId, providerName: provider.displayName)
+                        if let compatible = provider as? CompatibleAPIProvider {
+                            Text(compatible.configuration.baseURL.absoluteString)
+                                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            CloudPageSharingToggle(providerID: provider.providerId,
+                                providerName: compatible.configuration.baseURL.host ?? provider.displayName)
+                        } else {
+                            CloudPageSharingToggle(providerID: provider.providerId, providerName: provider.displayName)
+                        }
                     } else {
                         Text("Page text and replies stay on this Mac. Private pages are excluded.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -94,6 +123,10 @@ struct AIProviderSettingsView: View {
             pendingKey = ""
             keyError = nil
         }) { keySheet }
+        .sheet(isPresented: $showingCompatibleSheet, onDismiss: {
+            compatibleKey = ""
+            compatibleError = nil
+        }) { compatibleSheet }
     }
 
     private func providerRow(_ provider: AIProvider, detail: String,
@@ -118,8 +151,81 @@ struct AIProviderSettingsView: View {
                 } label: { Image(systemName: "ellipsis").frame(width: 20) }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .disabled(providers.isInitializing).help("\(provider.displayName) options")
+            } else if provider is CompatibleAPIProvider {
+                Menu {
+                    Button("Edit connection") { beginCompatibleEntry() }
+                    Button("Remove connection", role: .destructive) {
+                        do {
+                            try providers.removeCompatibleAPI()
+                            status = "Connection removed. Choose a provider to continue."
+                        } catch { status = error.localizedDescription }
+                    }
+                } label: { Image(systemName: "ellipsis").frame(width: 20) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .disabled(providers.isInitializing).help("Custom API options")
             }
         }
+    }
+
+    private var compatibleSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Custom API").font(.title3.weight(.semibold))
+            TextField("API base URL, including /v1", text: $compatibleEndpoint)
+                .textFieldStyle(.roundedBorder).accessibilityLabel("API base URL")
+                .onChange(of: compatibleEndpoint) { _, _ in
+                    keepCompatibleKey = false
+                    compatibleKey = ""
+                }
+            TextField("Model ID", text: $compatibleModel)
+                .textFieldStyle(.roundedBorder).accessibilityLabel("API model ID")
+            SecureField(keepCompatibleKey ? "Saved key · enter to replace" : "API key", text: $compatibleKey)
+                .textFieldStyle(.roundedBorder).accessibilityLabel("Custom API key")
+                .disabled(compatibleNoKey)
+            Toggle("No API key · loopback server only", isOn: $compatibleNoKey)
+                .toggleStyle(.checkbox).font(.caption)
+                .onChange(of: compatibleNoKey) { _, _ in
+                    keepCompatibleKey = false
+                    compatibleKey = ""
+                }
+            Text("OpenAI-compatible Chat Completions. Use HTTPS, or HTTP on localhost for a local server. Page sharing starts off.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let compatibleError {
+                Text(compatibleError).font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingCompatibleSheet = false }.keyboardShortcut(.cancelAction)
+                Button("Save connection", action: saveCompatibleEntry)
+                    .buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                    .disabled(providers.isInitializing || compatibleEndpoint.isEmpty || compatibleModel.isEmpty)
+            }
+        }
+        .padding(24).frame(width: 430)
+    }
+
+    private func beginCompatibleEntry() {
+        let configuration = CompatibleAPIConfiguration.load()
+        compatibleEndpoint = configuration?.baseURL.absoluteString ?? ""
+        compatibleModel = configuration?.modelID ?? ""
+        compatibleKey = ""
+        compatibleNoKey = configuration?.usesAPIKey == false
+        keepCompatibleKey = configuration?.usesAPIKey == true
+        compatibleError = nil
+        showingCompatibleSheet = true
+    }
+
+    private func saveCompatibleEntry() {
+        do {
+            let configuration = try CompatibleAPIConfiguration(endpoint: compatibleEndpoint,
+                modelID: compatibleModel, usesAPIKey: !compatibleNoKey)
+            try providers.saveCompatibleAPI(configuration, key: compatibleKey,
+                keepExistingKey: keepCompatibleKey && compatibleKey.isEmpty)
+            compatibleKey = ""
+            showingCompatibleSheet = false
+            status = "Connection saved. Choose Use to connect."
+        } catch { compatibleError = error.localizedDescription }
     }
 
     private var keySheet: some View {

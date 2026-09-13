@@ -28,7 +28,7 @@ xcodebuild -downloadComponent MetalToolchain
 open Web.xcodeproj
 ```
 
-Run the **Web** scheme. Choose your own signing team locally if Xcode requires one; keep signing changes out of your pull request. Swift packages use the checked-in dependency revisions. The [README](README.md#build) has cloning and release-build instructions.
+Run the **Web** scheme. Local builds use ad-hoc signing and do not need an Apple Developer account. Keep any signing overrides local. Swift packages use the checked-in dependency revisions. The [README](README.md#build) has cloning and release-build instructions.
 
 After a behavior change, run the app and the unit tests:
 
@@ -39,6 +39,8 @@ xcodebuild -project Web.xcodeproj -scheme Web \
 ```
 
 The unit tests do not require an API key. For UI changes, check light and dark appearance, keyboard focus, and Reduce Motion. For window or navigation changes, also check a second window and a private tab. Describe anything you could not test.
+
+For build-script changes, run `python3 -m unittest discover -s scripts/tests`. These checks cover local signing and rejection of source paths in the executable without using a certificate.
 
 ## Find the code
 

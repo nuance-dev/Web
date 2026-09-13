@@ -879,9 +879,6 @@ struct WebView: NSViewRepresentable {
 
         override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
             super.willOpenMenu(menu, with: event)
-            QuoteAction.addMenuItem(to: menu, for: self, documentRevision: { [weak coordinator] in
-                coordinator?.documentRevision
-            })
             guard let sourceURL = url, NavigationResolver.isWebURL(sourceURL),
                   let coordinator, let sourceTabID = coordinator.parent.tab?.id else { return }
             let revision = coordinator.documentRevision
@@ -1003,8 +1000,6 @@ struct WebView: NSViewRepresentable {
             self.parent = parent
             super.init()
             setupCertificateNotificationObservers()
-            // AI RESPONSIVENESS FIX: Initialize responsiveness protection
-            protectWebViewResponsiveness()
         }
 
         private func setupCertificateNotificationObservers() {
@@ -1271,27 +1266,9 @@ struct WebView: NSViewRepresentable {
                 }
             }
 
-            // ENHANCED AUTO-READ: Intelligent content extraction with adaptive timing
-            // This provides comprehensive page content without user intervention
-            if parent.tab?.isIncognito != true,
-                let currentURL = webView.url,
-                let scheme = currentURL.scheme?.lowercased(),
-                scheme == "http" || scheme == "https"
-            {
+            // Reading page content is an explicit assistant action, never a navigation side effect.
+            NotificationCenter.default.post(name: .pageNavigationCompleted, object: parent.tab?.id)
 
-                // Use adaptive timing system instead of fixed delay
-                Task {
-                    if let tab = self.parent.tab {
-                        await self.performAdaptiveContentExtraction(webView: webView, tab: tab)
-                    }
-                }
-            } else {
-                // For non-HTTP/HTTPS pages, still notify navigation completion
-                NotificationCenter.default.post(
-                    name: .pageNavigationCompleted,
-                    object: parent.tab?.id
-                )
-            }
         }
 
         // CRITICAL FIX: Enhanced WebContent process termination handler with network awareness
@@ -2028,190 +2005,6 @@ struct WebView: NSViewRepresentable {
                         buttonNumber: navigationAction.buttonNumber)]
             )
             return nil
-        }
-
-        // MARK: - WebView Responsiveness Protection
-
-        /// Ensures WebView remains responsive during AI operations
-        /// AI RESPONSIVENESS FIX: Prevents AI processing from blocking WebView JavaScript
-        private func protectWebViewResponsiveness() {
-            guard let webView = webView else { return }
-
-            // Periodically check if WebView is responsive during AI operations
-            let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) {
-                [weak self] timer in
-                guard let self = self else {
-                    timer.invalidate()
-                    return
-                }
-
-                // Only run checks if we have an active WebView
-                guard let webView = self.webView else {
-                    timer.invalidate()
-                    return
-                }
-
-                // Simple JavaScript responsiveness test
-                webView.evaluateJavaScript("Date.now()") { result, error in
-                    if let error = error {
-                        NSLog(
-                            "Page responsiveness check failed (domain: \((error as NSError).domain), code: \((error as NSError).code))"
-                        )
-                    } else if let timestamp = result as? NSNumber {
-                        let responseTime =
-                            Date().timeIntervalSince1970 * 1000 - timestamp.doubleValue
-                        if responseTime > 1000 {  // > 1 second delay
-                            NSLog("⚠️ WebView JavaScript response delay detected: \(responseTime)ms")
-                        }
-                    }
-                }
-            }
-
-            // Suspend/resume this timer based on app backgrounding
-            let suspendObserver = NotificationCenter.default.addObserver(
-                forName: .suspendWebViewResponsivenessChecks, object: nil, queue: .main
-            ) { _ in
-                timer.invalidate()
-            }
-
-            let resumeObserver = NotificationCenter.default.addObserver(
-                forName: .resumeWebViewResponsivenessChecks, object: nil, queue: .main
-            ) { [weak self] _ in
-                // Restart protection if needed
-                self?.protectWebViewResponsiveness()
-            }
-
-            // Store observers to remove later
-            objc_setAssociatedObject(
-                webView, &CoordinatorObserverKeys.suspendKey, suspendObserver,
-                .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-            objc_setAssociatedObject(
-                webView, &CoordinatorObserverKeys.resumeKey, resumeObserver,
-                .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-        }
-
-        private struct CoordinatorObserverKeys {
-            static var suspendKey: UInt8 = 0
-            static var resumeKey: UInt8 = 0
-        }
-
-        // MARK: - Adaptive Content Extraction
-
-        /// Performs intelligent content extraction with adaptive timing based on page readiness
-        /// AI RESPONSIVENESS FIX: Runs on background thread to prevent WebView blocking
-        private func performAdaptiveContentExtraction(webView: WKWebView, tab: Tab) async {
-            guard tab.isActive, tab.webView === webView else { return }
-            // AI RESPONSIVENESS FIX: Start monitoring WebView responsiveness
-            protectWebViewResponsiveness()
-
-            // AI RESPONSIVENESS FIX: Run context extraction on background queue
-            await withCheckedContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    Task {
-                        await self.performBackgroundContextExtraction(webView: webView, tab: tab)
-                        continuation.resume()
-                    }
-                }
-            }
-        }
-
-        /// Background context extraction to prevent UI blocking
-        /// AI RESPONSIVENESS FIX: Separated background processing logic
-        private func performBackgroundContextExtraction(webView: WKWebView, tab: Tab) async {
-            var attemptCount = 0
-            let maxAttempts = 5
-            var bestContext: WebpageContext?
-
-            // Wait for basic page readiness
-            await waitForPageReadiness(webView: webView)
-
-            while attemptCount < maxAttempts {
-                guard tab.isActive, tab.webView === webView else { return }
-                attemptCount += 1
-
-                let context = await ContextManager.shared.extractPageContext(
-                    from: webView, tab: tab)
-
-                if let context = context {
-                    bestContext = context
-
-                    // Log extraction attempt
-                    if AppLog.isVerboseEnabled {
-                        AppLog.debug(
-                            "Auto-read attempt #\(attemptCount): len=\(context.text.count) q=\(context.contentQuality) (\(context.qualityDescription))"
-                        )
-                    }
-
-                    // Check if we have good enough content or if JS recommends no retry
-                    if context.isHighQuality || !context.shouldRetry {
-                        if AppLog.isVerboseEnabled {
-                            AppLog.debug(
-                                "Auto-read complete: len=\(context.text.count) title=\(context.title)"
-                            )
-                        }
-                        break
-                    }
-
-                    // If content is not stable, wait for stability
-                    if !context.isContentStable {
-                        NSLog("⏳ Content not stable, waiting...")
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
-                    } else {
-                        // Wait progressively longer between attempts
-                        let delay = Double(attemptCount) * 1.5  // 1.5s, 3s, 4.5s, 6s
-                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    }
-                } else {
-                    // Failed extraction, wait before retry
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)  // 1.5 seconds
-                }
-            }
-
-            // Notify completion regardless of result quality
-            await MainActor.run {
-                NotificationCenter.default.post(
-                    name: .pageNavigationCompleted,
-                    object: tab.id
-                )
-            }
-
-            if let finalContext = bestContext {
-                NSLog(
-                    "🏁 Final extraction result: \(finalContext.text.count) characters, quality: \(finalContext.contentQuality) (\(finalContext.qualityDescription)) after \(attemptCount) attempts"
-                )
-            } else {
-                NSLog("❌ Content extraction failed after \(attemptCount) attempts")
-            }
-        }
-
-        /// Waits for basic page readiness using document.readyState and network activity
-        private func waitForPageReadiness(webView: WKWebView) async {
-            let maxWaitTime: TimeInterval = 10.0  // Maximum wait time
-            let startTime = Date()
-
-            while Date().timeIntervalSince(startTime) < maxWaitTime {
-                // Check document ready state
-                let isReady = await withCheckedContinuation { continuation in
-                    DispatchQueue.main.async {
-                        webView.evaluateJavaScript("document.readyState") { result, error in
-                            if let readyState = result as? String {
-                                continuation.resume(returning: readyState == "complete")
-                            } else {
-                                continuation.resume(returning: false)
-                            }
-                        }
-                    }
-                }
-
-                if isReady {
-                    // Wait a bit more for dynamic content
-                    try? await Task.sleep(nanoseconds: 500_000_000)  // 500ms
-                    break
-                }
-
-                // Check every 100ms
-                try? await Task.sleep(nanoseconds: 100_000_000)
-            }
         }
 
         deinit {

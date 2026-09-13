@@ -35,8 +35,13 @@ struct BackgroundNavigationTests {
         #expect(nativeTimers as? Bool == true)
         let previousTicks = try await webView.evaluateJavaScript("window.pageTicks") as? Int ?? 0
         _ = try await webView.evaluateJavaScript("window.dispatchEvent(new Event('beforeunload')); true")
-        try await Task.sleep(for: .milliseconds(100))
-        let ticks = try await webView.evaluateJavaScript("window.pageTicks") as? Int ?? 0
+        // WebKit may throttle an unselected page's timer. Wait for progress rather than one 100ms slice.
+        let tickDeadline = Date().addingTimeInterval(3)
+        var ticks = previousTicks
+        while ticks <= previousTicks, Date() < tickDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+            ticks = try await webView.evaluateJavaScript("window.pageTicks") as? Int ?? 0
+        }
         #expect(ticks > previousTicks)
 
         manager.setActiveTab(tab)

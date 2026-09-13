@@ -152,18 +152,11 @@ class SecureKeyStorage {
 
     /// Clear all stored API keys (for privacy/reset functionality)
     func clearAllAPIKeys() throws {
-        var errors: [Error] = []
-
-        for provider in AIProvider.allCases {
-            do {
-                try deleteAPIKey(for: provider)
-            } catch {
-                errors.append(error)
-            }
-        }
-
-        if !errors.isEmpty {
-            throw KeyStorageError.partialFailure(errors)
+        // Include endpoint-scoped compatible keys, including previously configured servers.
+        let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: serviceName] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeyStorageError.keychainError(status)
         }
 
         NSLog("🧹 All API keys cleared from Keychain")
@@ -200,6 +193,47 @@ class SecureKeyStorage {
     }
 
     private init() {}
+}
+
+extension SecureKeyStorage: CompatibleAPIKeyStorage {
+    func compatibleAPIKey(for configuration: CompatibleAPIConfiguration) throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: configuration.keychainAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw KeyStorageError.keychainError(status) }
+        guard let data = result as? Data, let key = String(data: data, encoding: .utf8) else { throw KeyStorageError.invalidData }
+        return key
+    }
+
+    func storeCompatibleAPIKey(_ key: String?, for configuration: CompatibleAPIConfiguration) throws {
+        let identity: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName,
+            kSecAttrAccount as String: configuration.keychainAccount
+        ]
+        guard let key else {
+            let status = SecItemDelete(identity as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw KeyStorageError.keychainError(status) }
+            return
+        }
+        try CompatibleAPIProvider.validateKey(key)
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(key.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        var status = SecItemUpdate(identity as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(identity.merging(attributes) { _, value in value } as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw KeyStorageError.keychainError(status) }
+    }
 }
 
 // MARK: - Errors

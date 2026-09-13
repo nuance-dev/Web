@@ -22,12 +22,8 @@ SOFTWARE.
 
 ---
 
-This project includes the following third-party dependencies:
-
-Apple MLX (https://github.com/ml-explore/mlx)
-Licensed under the MIT License
-Copyright (c) 2023 Apple Inc.
-
-MLX Swift Examples (https://github.com/ml-explore/mlx-swift-examples)
-Licensed under the MIT License
-Copyright (c) 2023 Apple Inc.
+Third-party components retain their own licenses and copyright notices.
+See Web/Resources/ThirdPartyNotices.txt for the full license texts, including
+MLX Swift (Copyright (c) 2023 ml-explore), MLX Swift Examples
+(Copyright (c) 2024 ml-explore), and the native MLX runtime
+(Copyright © 2023 Apple Inc.). CREDITS.md describes how Web uses these projects.

@@ -309,7 +309,13 @@ final class PeekController: NSObject, ObservableObject, WKNavigationDelegate, WK
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.animationBehavior = .none
-        panel.contentView = NSHostingView(rootView: PeekView(controller: self))
+        // One native glass edge owns the panel. Keep WebKit out of SwiftUI masks.
+        let content = GlanceHostingView(rootView: PeekView(controller: self))
+        let glass = NSGlassEffectView()
+        glass.style = .regular
+        glass.cornerRadius = 16
+        glass.contentView = content
+        panel.contentView = glass
         self.panel = panel
     }
 
@@ -429,5 +435,25 @@ final class PeekController: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         decisionHandler(.deny)
+    }
+}
+
+private final class GlanceHostingView: NSHostingView<PeekView> {
+    required init(rootView: PeekView) {
+        super.init(rootView: rootView)
+        wantsLayer = true
+        clipsToBounds = true
+        canDrawSubviewsIntoLayer = false
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        super.updateLayer()
+        layer?.cornerRadius = 16
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
     }
 }

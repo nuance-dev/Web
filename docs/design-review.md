@@ -14,7 +14,6 @@ The browser uses one outer Liquid Glass surface. The page meets the chrome witho
 | URL fields with separate parsers | Shared address handling and explicit editing state | Pasting and searching should behave consistently. |
 | Panels followed the key window | Each window owns its panels; menu routing handles sheets and missing key windows | Settings stays in the window that opened it. |
 | Quick link checks created permanent tabs | Open in Glance, with an explicit move to a full tab | Keep the source page in place. |
-| Copying a passage and its source took two steps | Copy Quote | Copy selected text with its page link. |
 
 Navigation targets are 28 × 28 points. Sidebar footer targets are 44 × 28 points, without a shared pill. Missing site icons use a vector globe. Standard controls stay visible. Hover feedback changes only the local control; keyboard tab changes do not animate. Reduced Motion disables custom movement.
 
