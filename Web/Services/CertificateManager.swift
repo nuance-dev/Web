@@ -108,26 +108,9 @@ class CertificateManager: ObservableObject {
         let publicKeyHashes: [String] // SHA-256 hashes of public keys
         let includeSubdomains: Bool
         
-        static let defaultPins: [CertificatePin] = [
-            // Example pins for critical services (should be configured per deployment)
-            CertificatePin(
-                domain: "accounts.google.com",
-                publicKeyHashes: [
-                    // These are example hashes - real implementation should use actual pins
-                    "YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=",
-                    "sRHdihwgkaib1P1gxX8HFszlD+7/gTfNvuAybgLPNis="
-                ],
-                includeSubdomains: false
-            ),
-            CertificatePin(
-                domain: "github.com",
-                publicKeyHashes: [
-                    "WoiWRyIOVNa9ihaBciRSC7XHjliYS9VwUGOIud4PB18=",
-                    "RRM1dGqnDFsCJXBTHky16vi1obOlCgFFn/yOhI/y+ho="
-                ],
-                includeSubdomains: true
-            )
-        ]
+        // Browsers trust the system certificate store. Stale sample pins break
+        // legitimate certificate rotation and are not a maintained pin set.
+        static let defaultPins: [CertificatePin] = []
     }
     
     // MARK: - User Preferences
@@ -135,7 +118,7 @@ class CertificateManager: ObservableObject {
     @Published var securityLevel: SecurityLevel = .standard
     @Published var allowSelfSignedCertificates: Bool = false
     @Published var requirePinningForCriticalSites: Bool = true
-    @Published var logSecurityEvents: Bool = true
+    @Published var logSecurityEvents: Bool = false
     
     enum SecurityLevel: String, CaseIterable {
         case paranoid = "Paranoid"
@@ -210,29 +193,12 @@ class CertificateManager: ObservableObject {
         case .invalid(let error):
             securityLogger.log(.certificateValidationFailed(host: host, error: error.localizedDescription))
             
-            // Check if user has previously granted exception for this host
-            let exceptionKey = "\(host):\(port)"
-            if userGrantedExceptions.contains(exceptionKey) {
-                securityLogger.log(.certificateExceptionUsed(host: host))
-                return (.useCredential, URLCredential(trust: serverTrust))
-            }
-            
-            // For critical security errors, always block
-            if error.securitySeverity == .critical && securityLevel != .relaxed {
-                return (.cancelAuthenticationChallenge, nil)
-            }
-            
+            // Invalid system trust or a pin mismatch is never bypassed by a
+            // persisted host allowlist, including in the legacy relaxed mode.
             return (.cancelAuthenticationChallenge, nil)
             
         case .requiresUserConsent(let error):
             securityLogger.log(.certificateRequiresUserConsent(host: host, error: error.localizedDescription))
-            
-            // Check existing exception
-            let exceptionKey = "\(host):\(port)"
-            if userGrantedExceptions.contains(exceptionKey) {
-                securityLogger.log(.certificateExceptionUsed(host: host))
-                return (.useCredential, URLCredential(trust: serverTrust))
-            }
             
             // Show security warning to user (this will be handled by notification)
             DispatchQueue.main.async {
@@ -256,8 +222,13 @@ class CertificateManager: ObservableObject {
     
     private func performCertificateValidation(serverTrust: SecTrust, host: String) -> CertificateValidationResult {
         
-        // 1. Basic system certificate validation
+        // Bind evaluation explicitly to the challenged hostname.
+        let policy = SecPolicyCreateSSL(true, host as CFString)
+        guard SecTrustSetPolicies(serverTrust, policy) == errSecSuccess else {
+            return .invalid(.invalidChain)
+        }
         let systemValidationResult = evaluateSystemTrust(serverTrust: serverTrust)
+        guard systemValidationResult == .valid else { return systemValidationResult }
         
         // 2. Check certificate pinning for applicable domains
         if let pin = findApplicablePin(for: host) {
@@ -470,10 +441,10 @@ class CertificateManager: ObservableObject {
         requirePinningForCriticalSites = defaults.bool(forKey: "RequirePinningForCriticalSites")
         logSecurityEvents = defaults.bool(forKey: "LogSecurityEvents")
         
-        if let exceptionsData = defaults.data(forKey: "UserGrantedExceptions"),
-           let exceptions = try? JSONDecoder().decode(Set<String>.self, from: exceptionsData) {
-            userGrantedExceptions = exceptions
-        }
+        // Old host-only exceptions authorized every future certificate for that
+        // host. They are not safe to migrate into a trust decision.
+        defaults.removeObject(forKey: "UserGrantedExceptions")
+        userGrantedExceptions.removeAll()
         
         if let pinsData = defaults.data(forKey: "CustomCertificatePins"),
            let pins = try? JSONDecoder().decode([CertificatePin].self, from: pinsData) {
@@ -489,9 +460,7 @@ class CertificateManager: ObservableObject {
         defaults.set(requirePinningForCriticalSites, forKey: "RequirePinningForCriticalSites")
         defaults.set(logSecurityEvents, forKey: "LogSecurityEvents")
         
-        if let exceptionsData = try? JSONEncoder().encode(userGrantedExceptions) {
-            defaults.set(exceptionsData, forKey: "UserGrantedExceptions")
-        }
+        defaults.removeObject(forKey: "UserGrantedExceptions")
         
         if let pinsData = try? JSONEncoder().encode(certificatePins) {
             defaults.set(pinsData, forKey: "CustomCertificatePins")
@@ -514,11 +483,9 @@ private class CertificateSecurityLogger {
     func log(_ event: SecurityEvent) {
         guard CertificateManager.shared.logSecurityEvents else { return }
         
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        let logMessage = "[\(timestamp)] SECURITY: \(event.logMessage)"
-        
-        // Log to console
-        NSLog("%@", logMessage)
+        // Hostnames and detailed trust errors can reveal private browsing.
+        // Keep the console event free of browsing destinations.
+        NSLog("TLS certificate validation event")
         
         // In production, this should also log to a secure audit file
         // or send to a security monitoring system

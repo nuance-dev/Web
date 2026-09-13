@@ -52,9 +52,8 @@ final class MLXRunner: ObservableObject {
 
     // Fallback model configurations for Hugging Face downloads
     private static let fallbackModelConfigurations: [String: ModelConfiguration] = [
-        "gemma-3-2b": ModelConfiguration(
-            id: "mlx-community/gemma-3-2b-it-4bit"
-        ),
+        LocalModelDefaults.repositoryID: LLMRegistry.gemma3_1B_qat_4bit,
+        "gemma-3-2b": LLMRegistry.gemma3_1B_qat_4bit, // Migrate the old nonexistent ID.
         "gemma-3-1b": ModelConfiguration(
             id: "mlx-community/gemma-3-1b-it-4bit"
         )
@@ -76,13 +75,13 @@ final class MLXRunner: ObservableObject {
     }
 
     /// Ensures MLX model is loaded with persistent caching between app launches
-    func ensureLoaded(modelKey: String = "gemma-3-2b") async throws {
+    func ensureLoaded(modelKey: String = LocalModelDefaults.repositoryID) async throws {
         // Try to create model configuration from path or fallback to Hugging Face
         let modelConfig: ModelConfiguration
         
         if modelKey.hasPrefix("/") {
             // Direct path to local model
-            modelConfig = ModelConfiguration(id: modelKey)
+            modelConfig = ModelConfiguration(directory: URL(fileURLWithPath: modelKey))
         } else if let fallbackConfig = Self.fallbackModelConfigurations[modelKey] {
             // Use fallback Hugging Face model
             modelConfig = fallbackConfig
@@ -162,7 +161,7 @@ final class MLXRunner: ObservableObject {
     }
 
     /// Generate a complete response with raw prompt (bypasses conversation preprocessing)
-    nonisolated func generateWithPrompt(prompt: String, modelKey: String = "gemma-3-2b") async throws -> String {
+    nonisolated func generateWithPrompt(prompt: String, modelKey: String = LocalModelDefaults.repositoryID) async throws -> String {
         try await ensureLoaded(modelKey: modelKey)
         
         guard await modelContainer != nil else { 
@@ -232,7 +231,7 @@ final class MLXRunner: ObservableObject {
     }
 
     /// Generate a complete response for the given prompt with conversation history
-    nonisolated func generate(prompt: String, maxTokens: Int = 512, temperature: Float = 0.7, modelKey: String = "gemma-3-2b") async throws -> String {
+    nonisolated func generate(prompt: String, maxTokens: Int = 512, temperature: Float = 0.7, modelKey: String = LocalModelDefaults.repositoryID) async throws -> String {
         try await ensureLoaded(modelKey: modelKey)
         
         guard await modelContainer != nil else { 
@@ -274,7 +273,7 @@ final class MLXRunner: ObservableObject {
     }
 
     /// Generate a streaming response with raw prompt
-    nonisolated func generateStreamWithPrompt(prompt: String, modelKey: String = "gemma-3-2b") -> AsyncThrowingStream<String, Error> {
+    nonisolated func generateStreamWithPrompt(prompt: String, modelKey: String = LocalModelDefaults.repositoryID) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
@@ -311,7 +310,7 @@ final class MLXRunner: ObservableObject {
     }
 
     /// Generate a streaming response with conversation context
-    nonisolated func generateStream(prompt: String, maxTokens: Int = 512, temperature: Float = 0.7, modelKey: String = "gemma-3-2b") -> AsyncThrowingStream<String, Error> {
+    nonisolated func generateStream(prompt: String, maxTokens: Int = 512, temperature: Float = 0.7, modelKey: String = LocalModelDefaults.repositoryID) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
@@ -372,7 +371,6 @@ final class MLXRunner: ObservableObject {
                         if let text = detokenizer.next() {
                             fullResponse += text
                             continuation.yield(text)
-                            NSLog("🌊 MLX token streamed: \(text.prefix(30))... (\(text.count) chars)")
                         }
                     }
                     return .more

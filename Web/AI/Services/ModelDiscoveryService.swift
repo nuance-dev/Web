@@ -187,7 +187,7 @@ class ModelDiscoveryService: ObservableObject {
     func validateModel(_ model: DiscoveredModel) async -> Bool {
         do {
             // Try to create a model configuration and test loading
-            let config = ModelConfiguration(id: model.path)
+            let config = ModelConfiguration(directory: URL(fileURLWithPath: model.path))
             let _ = try await LLMModelFactory.shared.loadContainer(configuration: config) { _ in }
 
             NSLog("✅ Model validation successful: \(model.name)")
@@ -200,7 +200,7 @@ class ModelDiscoveryService: ObservableObject {
 
     /// Convert discovered model to MLX configuration
     func createModelConfiguration(from model: DiscoveredModel) -> ModelConfiguration {
-        return ModelConfiguration(id: model.path)
+        return ModelConfiguration(directory: URL(fileURLWithPath: model.path))
     }
 
     /// Get models suitable for the current hardware
@@ -299,7 +299,7 @@ class ModelDiscoveryService: ObservableObject {
     private func extractModelName(from url: URL) -> String {
         let pathComponents = url.pathComponents
 
-        // For Hugging Face cache: extract from path like "models--mlx-community--gemma-3-2b-it-4bit"
+        // For Hugging Face cache: extract from path like "models--mlx-community--gemma-3-1b-it-qat-4bit"
         if let modelComponent = pathComponents.first(where: { $0.hasPrefix("models--") }) {
             return
                 modelComponent

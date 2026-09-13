@@ -3,26 +3,8 @@ import Foundation
 import SwiftUI
 import os.log
 
-/// SecurityMonitor
-///
-/// Comprehensive security event logging and monitoring system for download protection.
-///
-/// Key Features:
-/// - Real-time security event tracking and analysis
-/// - Comprehensive audit logging with encryption
-/// - Threat pattern detection and alerting
-/// - Security metrics and reporting dashboard
-/// - Integration with all security services
-/// - Privacy-preserving analytics
-/// - Configurable alerting and notifications
-///
-/// Security Design:
-/// - End-to-end encrypted log storage
-/// - Zero-knowledge architecture for sensitive data
-/// - Tamper-evident log integrity checking
-/// - Secure log rotation and archival
-/// - GDPR-compliant data handling
-/// - Configurable data retention policies
+/// Local security event diagnostics with encrypted on-disk records.
+/// This is not malware protection, remote monitoring, or a compliance guarantee.
 @MainActor
 class SecurityMonitor: ObservableObject {
     static let shared = SecurityMonitor()
@@ -236,7 +218,12 @@ class SecurityMonitor: ObservableObject {
         guard isEnabled else { return }
 
         // Convert details to string dictionary for Codable compliance
-        let stringDetails = details.mapValues { value in
+        let sensitiveKeys = ["password", "secret", "authorization", "cookie", "user_id", "identifier",
+            "jwt_subject", "session_id", "device_", "source_ip", "redirect_uri", "sourceurl"]
+        let safeDetails = details.filter { key, _ in
+            !sensitiveKeys.contains { key.lowercased().contains($0) }
+        }
+        let stringDetails = safeDetails.mapValues { value in
             if let stringValue = value as? String {
                 return stringValue
             } else if let codableValue = value as? CustomStringConvertible {
@@ -938,15 +925,14 @@ extension SecurityMonitor {
         details: [String: Any] = [:]
     ) {
         var eventDetails = details
-        eventDetails["filename"] = filename
-        eventDetails["sourceURL"] = sourceURL.absoluteString
-        eventDetails["domain"] = sourceURL.host ?? "unknown"
+        // Avoid retaining download names or signed URLs in a second history log.
+        eventDetails["transport"] = sourceURL.scheme ?? "unknown"
 
         logSecurityEvent(
             eventType: eventType,
             severity: severity,
             source: "DownloadManager",
-            message: "\(eventType.displayName) for \(filename)",
+            message: eventType.displayName,
             details: eventDetails
         )
     }

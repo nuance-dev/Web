@@ -65,89 +65,15 @@ class WebKitSecurityValidator {
         )
     }
 
-    /// Verifies that JIT entitlement is actually required for functionality
-    /// - Returns: True if JIT is required, false if it can be removed
-    func isJITRequired() -> Bool {
-        // Check if running on Apple Silicon (where JIT is more critical)
-        let isAppleSilicon =
-            ProcessInfo.processInfo.processorCount > 0
-            && ProcessInfo.processInfo.activeProcessorCount > 0
+    /// WKWebView executes JavaScript outside the app process. This does not
+    /// establish whether an independent in-process runtime such as MLX needs JIT.
+    func isJITRequired() -> Bool { false }
 
-        // On Apple Silicon, JavaScriptCore requires JIT for optimal performance
-        // On Intel, JIT provides performance benefits but may not be absolutely required
-        #if arch(arm64)
-            if AppLog.isVerboseEnabled { AppLog.debug("Running on Apple Silicon - JIT required") }
-            return true
-        #else
-            if AppLog.isVerboseEnabled { AppLog.debug("Running on Intel - JIT may be optional") }
-            return false  // Could potentially be removed on Intel with performance trade-off
-        #endif
-    }
-
-    /// Tests WebKit functionality without JIT to determine actual requirements
-    /// - Parameter completion: Callback with test results
+    /// An in-process JavaScript toggle cannot test a code-signing entitlement.
     func testWebKitWithoutJIT(completion: @escaping (JITTestResult) -> Void) {
-        if AppLog.isVerboseEnabled { AppLog.debug("Testing WebKit without JIT") }
-
-        // Create a test configuration with restricted JavaScript
-        let testConfig = WKWebViewConfiguration()
-        testConfig.defaultWebpagePreferences.allowsContentJavaScript = false
-
-        let testWebView = WKWebView(
-            frame: CGRect(x: 0, y: 0, width: 100, height: 100), configuration: testConfig)
-
-        // Test basic HTML loading
-        let testHTML = """
-            <!DOCTYPE html>
-            <html>
-            <head><title>JIT Test</title></head>
-            <body>
-                <h1>Basic HTML Test</h1>
-                <script>
-                    console.log("JavaScript execution test");
-                    document.body.innerHTML += "<p>JavaScript executed successfully</p>";
-                </script>
-            </body>
-            </html>
-            """
-
-        testWebView.loadHTMLString(testHTML, baseURL: nil)
-
-        // Wait for load completion and check results
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            testWebView.evaluateJavaScript("document.body.innerHTML") { result, error in
-                let testResult: JITTestResult
-
-                if let error = error {
-                    testResult = JITTestResult(
-                        basicHTMLWorking: false,
-                        javascriptWorking: false,
-                        error: error.localizedDescription,
-                        recommendation:
-                            "JIT entitlement appears to be required for basic WebKit functionality"
-                    )
-                } else if let html = result as? String,
-                    html.contains("JavaScript executed successfully")
-                {
-                    testResult = JITTestResult(
-                        basicHTMLWorking: true,
-                        javascriptWorking: true,
-                        error: nil,
-                        recommendation: "WebKit working without JIT - entitlement may be optional"
-                    )
-                } else {
-                    testResult = JITTestResult(
-                        basicHTMLWorking: true,
-                        javascriptWorking: false,
-                        error: nil,
-                        recommendation:
-                            "Basic HTML works but JavaScript disabled - JIT required for full functionality"
-                    )
-                }
-
-                completion(testResult)
-            }
-        }
+        completion(JITTestResult(basicHTMLWorking: false, javascriptWorking: false,
+            error: "No entitlement test was performed.",
+            recommendation: "Test a separately signed build without allow-jit, including local model inference."))
     }
 
     // MARK: - Specific Validation Methods
@@ -157,30 +83,8 @@ class WebKitSecurityValidator {
         issues: inout [SecurityIssue],
         recommendations: inout [String]
     ) {
-        let jsEnabled = config.defaultWebpagePreferences.allowsContentJavaScript
-
-        if jsEnabled {
-            // JavaScript is enabled - this requires JIT on Apple Silicon
-            recommendations.append(
-                "JavaScript enabled - JIT entitlement justified for Apple Silicon compatibility")
-
-            #if arch(arm64)
-                logger.info("✅ JavaScript enabled on Apple Silicon - JIT entitlement REQUIRED")
-            #else
-                issues.append(
-                    SecurityIssue(
-                        severity: .medium,
-                        description: "JavaScript enabled on Intel - consider testing without JIT",
-                        component: "JavaScript Policy"
-                    ))
-            #endif
-        } else {
-            issues.append(
-                SecurityIssue(
-                    severity: .low,
-                    description: "JavaScript disabled - JIT entitlement may not be necessary",
-                    component: "JavaScript Policy"
-                ))
+        if config.defaultWebpagePreferences.allowsContentJavaScript {
+            recommendations.append("Web content JavaScript is enabled in WebKit's content process.")
         }
     }
 
@@ -275,45 +179,16 @@ class WebKitSecurityValidator {
         }
     }
 
-    /// Generate App Store entitlement justification document
+    /// Configuration observations are not an entitlement or App Store compliance audit.
     func generateEntitlementJustification() -> String {
-        let jitRequired = isJITRequired()
-        let platform = ProcessInfo.processInfo.processorCount > 0 ? "Apple Silicon" : "Intel"
-
-        return """
-            # Entitlement Justification: com.apple.security.cs.allow-jit
-
-            ## Application Type
-            Web Browser using WebKit/WKWebView for web content rendering
-
-            ## Entitlement Necessity
-            **JIT Required**: \(jitRequired ? "YES" : "NO")
-            **Platform**: \(platform)
-            **Reason**: WebKit's JavaScriptCore engine requires JIT compilation for JavaScript execution on Apple Silicon
-
-            ## Technical Justification
-            - **WebKit Integration**: Application uses WKWebView to render web content
-            - **JavaScript Execution**: Modern websites require JavaScript for functionality
-            - **Performance**: JIT compilation is essential for acceptable JavaScript performance
-            - **Platform Requirement**: Apple Silicon architecture requires JIT for JavaScriptCore
-
-            ## Security Mitigations
-            - ✅ Process isolation through WebKit's multi-process architecture
-            - ✅ App sandbox restrictions limit attack surface
-            - ✅ Runtime security monitoring with anomaly detection
-            - ✅ Memory usage monitoring and alerting
-            - ✅ Removed unnecessary unsigned executable memory entitlement
-
-            ## Alternative Assessment
-            - **Without JIT**: JavaScript performance severely degraded or non-functional
-            - **User Impact**: Modern websites would not function properly
-            - **Business Need**: Essential for web browser functionality
-
-            ## Compliance Statement
-            This entitlement is used solely for legitimate WebKit JavaScript execution and not for
-            dynamic code generation, plugin systems, or other high-risk use cases.
-            """
+        """
+        WKWebView uses WebKit's separate content process for page JavaScript.
+        Its presence alone does not justify allow-jit in the host application.
+        The app retains this entitlement pending a signed build test of local MLX inference.
+        Configuration inspection cannot establish sandbox integrity or App Store compliance.
+        """
     }
+
 }
 
 // MARK: - Supporting Types

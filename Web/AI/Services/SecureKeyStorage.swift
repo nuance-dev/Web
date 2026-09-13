@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// Secure API key storage service using macOS Keychain Services
-/// Provides encrypted storage for AI provider API keys with biometric protection
+/// Provides encrypted storage for AI provider API keys with device-only Keychain protection
 class SecureKeyStorage {
 
     static let shared = SecureKeyStorage()
@@ -38,7 +38,7 @@ class SecureKeyStorage {
 
     // MARK: - Public Interface
 
-    /// Store an API key securely in Keychain with biometric protection
+    /// Store an API key securely in Keychain with device-only Keychain protection
     func storeAPIKey(_ apiKey: String, for provider: AIProvider) throws {
         guard !apiKey.isEmpty else {
             throw KeyStorageError.emptyKey
@@ -50,50 +50,26 @@ class SecureKeyStorage {
         let account = provider.keychainAccount
         let data = apiKey.data(using: .utf8)!
 
-        // Create query. Prefer biometric if available; otherwise fall back to standard protection.
-        var query: [String: Any] = [
+        let identity: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: account,
+        ]
+        let attributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
-
-        // Attempt to add biometric access control if device supports it
-        if let access = SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            [.biometryCurrentSet],
-            nil
-        ) {
-            query[kSecAttrAccessControl as String] = access
-        }
-
-        // Delete existing key if present
-        let deleteQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: account,
-        ]
-
-        SecItemDelete(deleteQuery as CFDictionary)
-
-        // Add new key (first try with biometric access, then fall back without if needed)
-        var status = SecItemAdd(query as CFDictionary, nil)
-        if status != errSecSuccess {
-            // Fallback: remove access control and try again with standard accessibility only
-            query.removeValue(forKey: kSecAttrAccessControl as String)
+        var status = SecItemUpdate(identity as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            let query = identity.merging(attributes) { _, new in new }
             status = SecItemAdd(query as CFDictionary, nil)
         }
-
-        guard status == errSecSuccess else {
-            throw KeyStorageError.keychainError(status)
-        }
+        guard status == errSecSuccess else { throw KeyStorageError.keychainError(status) }
 
         NSLog("🔐 API key stored securely for \(provider.displayName)")
     }
 
-    /// Retrieve an API key from Keychain (requires biometric authentication)
+    /// Retrieve an API key from Keychain (macOS may request authentication)
     func retrieveAPIKey(for provider: AIProvider) throws -> String? {
         let account = provider.keychainAccount
 
@@ -162,10 +138,11 @@ class SecureKeyStorage {
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: account,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
         ]
 
         let status = SecItemCopyMatching(query as CFDictionary, nil)
-        return status == errSecSuccess
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
     /// Get all providers that have stored API keys

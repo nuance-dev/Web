@@ -1,123 +1,74 @@
 import SwiftUI
-import os.log
 
 @main
 struct WebApp: App {
-    let coreDataStack = CoreDataStack.shared
-    let keyboardShortcutHandler = KeyboardShortcutHandler.shared
-
-    init() {
-        configureLogging()
-        // Initialize keyboard shortcut handler
-        _ = keyboardShortcutHandler
-        // Initialize application state observer to manage background resource policies
-        _ = ApplicationStateObserver.shared
-        // CRITICAL: Initialize comprehensive background resource manager for proper hibernation
-        _ = BackgroundResourceManager.shared
-        // SECURITY: Initialize runtime security monitor for JIT entitlement risk mitigation
-        _ = RuntimeSecurityMonitor.shared
-        // Initialize update service and check for updates in background
-        setupUpdateChecker()
-    }
+    @NSApplicationDelegateAdaptor(WebApplicationDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "browser") {
             ContentView()
                 .background(WindowConfigurator())
-                .background(WindowClipGuard())  // Guardrail: forces clipsToBounds=true to avoid TUINS crash
-                .environment(\.managedObjectContext, coreDataStack.viewContext)
+                .environment(\.managedObjectContext, CoreDataStack.shared.viewContext)
         }
-        // Use hiddenTitleBar style to remove the system title bar entirely
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1200, height: 800)
-        .commands {
-            BrowserCommands()
-        }
+        .commands { BrowserCommands() }
     }
+}
 
-    private func configureLogging() {
-        // Set environment variables to reduce WebKit verbosity
-        setenv("WEBKIT_DISABLE_VERBOSE_LOGGING", "1", 1)
-        setenv("WEBKIT_SUPPRESS_PROCESS_LOGS", "1", 1)
-        setenv("OS_ACTIVITY_MODE", "disable", 1)
-
-        // Only log startup message in verbose mode
-        AppLog.debug("Web browser started with reduced WebKit logging")
-    }
-
-    private func setupUpdateChecker() {
-        // Note: UpdateService is referenced but not implemented yet
-        // For now, we'll implement a basic update checker that responds to suspension
-        setupBackgroundAwareUpdateChecker()
-    }
-
-    private func setupBackgroundAwareUpdateChecker() {
-        var updateTimer: Timer?
-
-        // Function to create the update timer
-        let createUpdateTimer = {
-            updateTimer?.invalidate()
-            updateTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { _ in
-                // Check for updates only if app is not in background
-                if !BackgroundResourceManager.shared.isAppInBackground {
-                    if AppLog.isVerboseEnabled { AppLog.debug("Checking for updates…") }
-                    // updateService.checkForUpdates(manual: false) - Commented until UpdateService is implemented
-                }
-            }
-        }
-
-        // Create initial timer
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            createUpdateTimer()
-        }
-
-        // Listen for suspension notifications
-        NotificationCenter.default.addObserver(
-            forName: .suspendUpdateTimer, object: nil, queue: .main
-        ) { _ in
-            if AppLog.isVerboseEnabled { AppLog.debug("Suspending update timer") }
-            updateTimer?.invalidate()
-            updateTimer = nil
-        }
-
-        // Listen for resumption notifications
-        NotificationCenter.default.addObserver(
-            forName: .resumeUpdateTimer, object: nil, queue: .main
-        ) { _ in
-            if AppLog.isVerboseEnabled { AppLog.debug("Resuming update timer") }
-            createUpdateTimer()
-        }
+final class WebApplicationDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = KeyboardShortcutHandler.shared
+        _ = ApplicationStateObserver.shared
+        _ = BackgroundResourceManager.shared
+        PeekController.shared.start()
     }
 }
 
 struct BrowserCommands: Commands {
+    @AppStorage("tabDisplayMode") private var tabDisplayMode = TabDisplayMode.sidebar
+    @AppStorage("hideTopBar") private var hideAddressBar = false
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("New Tab") {
-                // TODO: Implement new tab shortcut
                 NotificationCenter.default.post(name: .newTabRequested, object: nil)
             }
             .keyboardShortcut("t", modifiers: .command)
 
             Button("Close Tab") {
-                // TODO: Implement close tab shortcut
                 NotificationCenter.default.post(name: .closeTabRequested, object: nil)
             }
             .keyboardShortcut("w", modifiers: .command)
 
             Button("Reopen Closed Tab") {
-                // TODO: Implement reopen closed tab shortcut
                 NotificationCenter.default.post(name: .reopenTabRequested, object: nil)
             }
             .keyboardShortcut("t", modifiers: [.command, .shift])
 
-            Button("New Incognito Tab") {
+            Button("New Private Tab") {
                 NotificationCenter.default.post(name: .newIncognitoTabRequested, object: nil)
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
         }
 
         CommandGroup(after: .toolbar) {
+            Picker("Tabs", selection: $tabDisplayMode) {
+                Text("Sidebar").tag(TabDisplayMode.sidebar)
+                Text("Top").tag(TabDisplayMode.topBar)
+                Text("Hidden").tag(TabDisplayMode.hidden)
+            }
+            Toggle("Show Address Bar", isOn: Binding(
+                get: { !hideAddressBar }, set: { hideAddressBar = !$0 }))
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+            Button("Focus Mode") {
+                NotificationCenter.default.post(name: .toggleEdgeToEdge, object: nil)
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
+            Divider()
+            Button("Glance") {
+                PeekController.shared.toggle()
+            }
+
             Button("Reload") {
                 NotificationCenter.default.post(name: .reloadRequested, object: nil)
             }
@@ -146,12 +97,12 @@ struct BrowserCommands: Commands {
                     object: nil
                 )
             }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .keyboardShortcut("d", modifiers: .command)
 
             Button("Show All Bookmarks") {
                 NotificationCenter.default.post(name: .bookmarkPageRequested, object: nil)
             }
-            .keyboardShortcut("d", modifiers: .command)
+            .keyboardShortcut("d", modifiers: [.command, .shift])
 
             Divider()
 
@@ -164,10 +115,6 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("y", modifiers: .command)
 
-            Button("Clear History...") {
-                // TODO: Implement clear history
-            }
-
             Divider()
 
             HistoryMenuContent()
@@ -178,10 +125,6 @@ struct BrowserCommands: Commands {
                 NotificationCenter.default.post(name: .showDownloadsRequested, object: nil)
             }
             .keyboardShortcut("j", modifiers: [.command, .shift])
-
-            Button("Clear Downloads...") {
-                // TODO: Implement clear downloads
-            }
 
             Divider()
 
@@ -222,25 +165,10 @@ struct BrowserCommands: Commands {
 
         CommandGroup(after: .windowArrangement) {
 
-            Button("Developer Tools") {
-                NotificationCenter.default.post(name: .showDeveloperToolsRequested, object: nil)
-            }
-            .keyboardShortcut("i", modifiers: [.command, .option])
-
             Button("Toggle Tab Display") {
                 NotificationCenter.default.post(name: .toggleTabDisplay, object: nil)
             }
-            .keyboardShortcut("s", modifiers: .command)
-
-            Button("Toggle Edge-to-Edge Mode") {
-                NotificationCenter.default.post(name: .toggleEdgeToEdge, object: nil)
-            }
-            .keyboardShortcut("b", modifiers: [.command, .shift])
-
-            Button("Toggle Top Bar") {
-                NotificationCenter.default.post(name: .toggleTopBar, object: nil)
-            }
-            .keyboardShortcut("h", modifiers: [.command, .shift])
+            .keyboardShortcut("s", modifiers: [.command, .option])
 
             Button("Next Tab") {
                 NotificationCenter.default.post(name: .nextTabRequested, object: nil)
@@ -252,15 +180,15 @@ struct BrowserCommands: Commands {
             }
             .keyboardShortcut("[", modifiers: [.command, .shift])
 
-            Button("Next Tab (Arrow)") {
+            Button("Next Tab (Control-Tab)") {
                 NotificationCenter.default.post(name: .nextTabRequested, object: nil)
             }
-            .keyboardShortcut(.rightArrow, modifiers: .command)
+            .keyboardShortcut(.tab, modifiers: .control)
 
-            Button("Previous Tab (Arrow)") {
+            Button("Previous Tab (Control-Tab)") {
                 NotificationCenter.default.post(name: .previousTabRequested, object: nil)
             }
-            .keyboardShortcut(.leftArrow, modifiers: .command)
+            .keyboardShortcut(.tab, modifiers: [.control, .shift])
 
             Divider()
 

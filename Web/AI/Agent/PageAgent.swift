@@ -20,7 +20,9 @@ public final class PageAgent: NSObject {
     }
 
     public func navigate(_ url: URL, newTab: Bool) async {
-        guard !newTab, let webView else { return }
+        guard AgentPermissionManager.browserAutomationEnabled,
+              ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              !newTab, let webView else { return }
         await MainActor.run { webView.load(URLRequest(url: url)) }
     }
 
@@ -133,11 +135,13 @@ public final class PageAgent: NSObject {
     // MARK: - Individual Actions
 
     public func click(locator: LocatorInput) async -> Bool {
+        guard AgentPermissionManager.browserAutomationEnabled else { return false }
         await throttleIfNeeded()
         return await callAgentAction(name: "click", payload: locator)
     }
 
     public func typeText(locator: LocatorInput, text: String, submit: Bool) async -> Bool {
+        guard AgentPermissionManager.browserAutomationEnabled else { return false }
         guard let webView else { return false }
         await throttleIfNeeded()
         let encoder = JSONEncoder()
@@ -185,6 +189,7 @@ public final class PageAgent: NSObject {
     }
 
     public func select(locator: LocatorInput, value: String) async -> Bool {
+        guard AgentPermissionManager.browserAutomationEnabled else { return false }
         guard let webView else { return false }
         await throttleIfNeeded()
         let encoder = JSONEncoder()
@@ -200,6 +205,7 @@ public final class PageAgent: NSObject {
 
     /// Best-effort consent/banner dismiss
     public func dismissConsent() async -> Bool {
+        guard AgentPermissionManager.browserAutomationEnabled else { return false }
         guard let webView else { return false }
         await throttleIfNeeded()
         let script =
@@ -233,7 +239,8 @@ public final class PageAgent: NSObject {
     /// readMode: "selection" | "article" | "all"
     public func extract(readMode: String, selector: String?) async -> String {
         guard let webView else { return "" }
-        let safeSelector = selector?.replacingOccurrences(of: "\"", with: "\\\"") ?? ""
+        let safeSelector = selector.flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
         let mode = readMode.lowercased()
         let js: String
         if mode == "selection" {
@@ -243,9 +250,9 @@ public final class PageAgent: NSObject {
             // Prefer <article>, fallback to main content heuristics
             js =
                 "(() => { try { const el = document.querySelector('article') || document.querySelector('main') || document.body; return (el.innerText || el.textContent || '').slice(0, 20000); } catch(e) { return ''; } })();"
-        } else if !safeSelector.isEmpty {
+        } else if let selector, !selector.isEmpty {
             js =
-                "(() => { try { const el = document.querySelector(\"\(safeSelector)\"); return el ? (el.innerText || el.textContent || '').slice(0, 20000) : ''; } catch(e) { return ''; } })();"
+                "(() => { try { const el = document.querySelector(\(safeSelector)); return el ? (el.innerText || el.textContent || '').slice(0, 20000) : ''; } catch(e) { return ''; } })();"
         } else {
             js =
                 "(() => { try { return (document.body && (document.body.innerText || document.body.textContent) || '').slice(0, 20000); } catch(e) { return ''; } })();"

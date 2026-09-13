@@ -72,26 +72,12 @@ class TabHibernationManager: ObservableObject {
         performTrueHibernation(for: tab, reason: "Manual hibernation")
     }
 
-    /// Wakes up a hibernated tab with full state restoration
-    func wakeUpTab(_ tab: Tab) -> WKWebView? {
+    /// SwiftUI recreates the page through the browser's configured WebView factory.
+    /// Creating a bare WKWebView here bypasses its delegates and loads the page twice.
+    func wakeUpTab(_ tab: Tab) -> Bool {
         guard tab.isHibernated, let hibernatedData = hibernatedTabStates[tab.id] else {
-            return tab.webView
+            return false
         }
-
-        // Create new WebView with shared configuration
-        let webView = WebKitManager.shared.createWebView(isIncognito: tab.isIncognito)
-
-        // Restore preserved state
-        tab.restoreState(to: webView)
-
-        // Navigate to preserved URL if available
-        if let url = hibernatedData.tabState.url {
-            let request = URLRequest(url: url)
-            webView.load(request)
-        }
-
-        // Update tab properties
-        tab.webView = webView
         tab.isHibernated = false
         tab.snapshot = hibernatedData.snapshot  // Keep snapshot until page loads
 
@@ -102,7 +88,15 @@ class TabHibernationManager: ObservableObject {
         // Update memory tracking
         memoryFreedBytes = max(0, memoryFreedBytes - hibernatedData.memoryFreed)
 
-        return webView
+        return true
+    }
+
+    /// Closing a tab must also release any private page snapshot held by this service.
+    func forgetTab(_ id: UUID) {
+        if let data = hibernatedTabStates.removeValue(forKey: id) {
+            memoryFreedBytes = max(0, memoryFreedBytes - data.memoryFreed)
+        }
+        hibernatedTabs.remove(id)
     }
 
     /// Gets hibernation statistics for monitoring
@@ -273,7 +267,8 @@ class TabHibernationManager: ObservableObject {
 
         // Create snapshot before hibernation
         createHibernationSnapshot(for: tab, webView: webView) { [weak self, weak tab] snapshot in
-            guard let self = self, let tab = tab else { return }
+            guard let self = self, let tab = tab,
+                  tab.webView === webView, !tab.isActive, !tab.isHibernated else { return }
 
             // Estimate memory that will be freed (approximation)
             let estimatedMemoryFreed: Int64 = 150 * 1024 * 1024  // ~150MB per WebView
@@ -289,7 +284,16 @@ class TabHibernationManager: ObservableObject {
             self.hibernatedTabStates[tab.id] = hibernatedData
 
             DispatchQueue.main.async {
+                guard tab.webView === webView, !tab.isActive, !tab.isHibernated else {
+                    self.forgetTab(tab.id)
+                    return
+                }
                 // Remove WebView from view hierarchy and memory
+                webView.stopLoading()
+                webView.pauseAllMediaPlayback(completionHandler: nil)
+                webView.configuration.userContentController.removeAllScriptMessageHandlers()
+                webView.navigationDelegate = nil
+                webView.uiDelegate = nil
                 webView.removeFromSuperview()
                 tab.webView = nil
 

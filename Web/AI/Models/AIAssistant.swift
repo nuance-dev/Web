@@ -10,6 +10,10 @@ class AIAssistant: ObservableObject {
     // MARK: - Published Properties (Main Actor for UI Updates)
 
     @MainActor @Published var isInitialized: Bool = false
+    @Published private(set) var isInitializing = false
+    private var initializationTask: (id: UUID, task: Task<Void, Never>)?
+    private var initializedConfiguration: String?
+    private var requestRevision = 0
     @MainActor @Published var isProcessing: Bool = false
     @MainActor @Published var initializationStatus: String = "Not initialized"
     // Agent timeline state (for Agent mode in the sidebar)
@@ -60,7 +64,9 @@ class AIAssistant: ObservableObject {
             mlxModelService: mlxModelService
         )
 
-        // Set up bindings - will be called async in initialize
+        setupBindings()
+
+        // Provider loading begins when the assistant is opened.
         AppLog.debug("AI Assistant init: framework=\(aiConfiguration.framework)")
     }
 
@@ -76,96 +82,42 @@ class AIAssistant: ObservableObject {
         conversationHistory.messageCount
     }
 
-    /// FIXED: Initialize the AI system with safe parallel tasks (race condition fixed)
+    /// Coalesce callers and report the state of the selected provider, not a spare local runner.
     func initialize() async {
-        await updateStatus("Initializing AI system...")
-
-        do {
-            // Branch initialization by current provider type
-            guard let provider = providerManager.currentProvider else {
-                throw AIError.inferenceError("No AI provider available")
-            }
-
-            if provider.providerType == .local {
-                // Preserve existing detailed MLX initialization for local models
-                await updateStatus("Validating hardware compatibility...")
-                try validateHardware()
-
-                await updateStatus("Checking MLX AI model availability...")
-                if !(await mlxModelService.isAIReady()) {
-                    await updateStatus("MLX AI model not found - preparing download...")
-                    let downloadInfo = await mlxModelService.getDownloadInfo()
-                    AppLog.debug("MLX model needs download: \(downloadInfo.formattedSize)")
-                    try await mlxModelService.initializeAI()
-                }
-
-                await updateStatus("Loading MLX AI model...")
-                while !(await mlxModelService.isAIReady()) {
-                    if case .failed(let error) = mlxModelService.downloadState {
-                        throw MLXModelError.downloadFailed("MLX model download failed: \(error)")
-                    }
-                    let progress = mlxModelService.downloadProgress
-                    if progress > 0 {
-                        await updateStatus("Loading MLX AI model... (\(Int(progress * 100)))")
-                    } else {
-                        await updateStatus("Loading MLX AI model...")
-                    }
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                }
-
-                // Initialize frameworks and services required for local
-                await withTaskGroup(of: Void.self) { group in
-                    if aiConfiguration.framework == .mlx {
-                        group.addTask { [weak self] in
-                            guard let self else { return }
-                            do {
-                                await self.updateStatus("Initializing MLX framework...")
-                                try await self.mlxWrapper.initialize()
-                            } catch {
-                                AppLog.error(
-                                    "MLX initialization failed: \(error.localizedDescription)")
-                            }
-                        }
-                    }
-                    group.addTask { [weak self] in
-                        guard let self else { return }
-                        do {
-                            await self.updateStatus("Setting up privacy protection...")
-                            try await self.privacyManager.initialize()
-                        } catch {
-                            AppLog.error(
-                                "Privacy manager init failed: \(error.localizedDescription)")
-                        }
-                    }
-                }
-
-                await updateStatus("Starting AI inference engine...")
-                try await gemmaService.initialize()
-            } else {
-                // External provider (BYOK): let provider handle its own initialization
-                await updateStatus("Initializing \(provider.displayName)...")
-                try await provider.initialize()
-            }
-
-            // Observe provider changes to reinitialize when switching
-            setupProviderBindingsOnce()
-
-            Task { @MainActor in
-                isInitialized = true
-                lastError = nil
-            }
-            await updateStatus("AI Assistant ready")
-            AppLog.debug("AI Assistant initialization complete")
-
-        } catch {
-            let errorMessage = "AI initialization failed: \(error.localizedDescription)"
-            await updateStatus("Initialization failed")
-            Task { @MainActor in
-                lastError = errorMessage
-                isInitialized = false
-            }
-            AppLog.error(errorMessage)
+        setupProviderBindingsOnce()
+        if let running = initializationTask {
+            await running.task.value
+            if initializationTask?.id == running.id { initializationTask = nil }
         }
+        guard let provider = providerManager.currentProvider else {
+            lastError = "Choose a provider in Settings."
+            return
+        }
+        let configuration = "\(provider.providerId):\(provider.selectedModel?.id ?? "")"
+        if isInitialized && initializedConfiguration == configuration { return }
+        if let running = initializationTask { await running.task.value; return }
+        let id = UUID()
+        let task = Task { @MainActor in
+            isInitializing = true
+            isInitialized = false
+            lastError = nil
+            initializationStatus = "Loading \(provider.displayName)…"
+            defer { isInitializing = false }
+            do {
+                try await provider.initialize()
+                guard providerManager.currentProvider?.providerId == provider.providerId else { return }
+                initializedConfiguration = "\(provider.providerId):\(provider.selectedModel?.id ?? "")"
+                isInitialized = true
+                initializationStatus = "Ready"
+            } catch {
+                guard providerManager.currentProvider?.providerId == provider.providerId else { return }
+                lastError = error.localizedDescription
+                initializationStatus = "Couldn't load model"
+            }
+        }
+        initializationTask = (id, task)
+        await task.value
+        if initializationTask?.id == id { initializationTask = nil }
     }
 
     // MARK: - Agent Planning (M2 minimal)
@@ -216,7 +168,11 @@ class AIAssistant: ObservableObject {
 
     /// Plans and executes the agent steps with a live timeline.
     func planAndRunAgent(_ query: String) async {
-        NSLog("🛰️ Agent: Planning for query: \(query.prefix(200))")
+        guard AgentPermissionManager.browserAutomationEnabled else {
+            await MainActor.run { self.lastError = "Page automation is unavailable. Ask a question or summarize the page." }
+            return
+        }
+        AppLog.debug("Agent planning requested")
         do {
             // Fast-path: accept dev /plan JSON directly
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -547,6 +503,10 @@ class AIAssistant: ObservableObject {
     /// Runs a multi-step, model-directed loop: model observes, decides a tool, we execute, feed results back, repeat.
     /// This uses ToolRegistry semantics and avoids site-specific assumptions. Stops on explicit done, maxSteps, or no-op.
     func runAgentLoop(_ instruction: String, maxSteps: Int = 12) async {
+        guard AgentPermissionManager.browserAutomationEnabled else {
+            await MainActor.run { self.lastError = "Page automation is unavailable. Ask a question or summarize the page." }
+            return
+        }
         guard await isInitialized else { return }
         let start = Date()
         let (maybeWebView, host) = await MainActor.run { () -> (WKWebView?, String?) in
@@ -603,13 +563,8 @@ class AIAssistant: ObservableObject {
 
         // Helper to auto-dismiss cookie/consent banners via PageAgent
         func autoDismissConsentIfPresent() async {
-            let (maybeWebView, _) = await MainActor.run { () -> (WKWebView?, String?) in
-                (self.tabManager?.activeTab?.webView, self.tabManager?.activeTab?.url?.host)
-            }
-            guard let webView = maybeWebView else { return }
-            let agent = PageAgent(webView: webView)
-            _ = await agent.dismissConsent()
-        }
+            // Cookie consent belongs to the user; never dismiss or accept it automatically.
+    }
 
         // Tool schema for the model
         let toolSchema = """
@@ -1574,6 +1529,9 @@ class AIAssistant: ObservableObject {
             throw AIError.notInitialized
         }
 
+        let revision = requestRevision
+        guard let provider = providerManager.currentProvider else { throw AIError.notInitialized }
+
         AppLog.debug("AI Chat: Processing query (includeContext=\(includeContext))")
 
         // MEMORY SAFETY: Check if AI operations are safe to perform
@@ -1589,7 +1547,7 @@ class AIAssistant: ObservableObject {
 
         do {
             // Extract context from current webpage with optional history
-            let webpageContext = await extractCurrentContext()
+            let webpageContext = includeContext ? await extractCurrentContext() : nil
             if let webpageContext = webpageContext {
                 AppLog.debug(
                     "AI Chat: Extracted context: \(webpageContext.text.count) chars, q=\(webpageContext.contentQuality)"
@@ -1602,7 +1560,7 @@ class AIAssistant: ObservableObject {
             }
 
             let context =
-                includeContext
+                includeContext && webpageContext != nil
                 ? await contextManager.getFormattedContext(
                     from: webpageContext, includeHistory: includeHistory) : nil
             if let context = context {
@@ -1619,19 +1577,17 @@ class AIAssistant: ObservableObject {
                 contextData: context
             )
 
-            // Add to conversation history
-            conversationHistory.addMessage(userMessage)
-
             // Process with current provider
-            guard let provider = providerManager.currentProvider else {
-                throw AIError.inferenceError("No AI provider available")
-            }
+            try validateRequest(revision)
             let response = try await provider.generateResponse(
                 query: query,
                 context: context,
                 conversationHistory: conversationHistory.getRecentMessages(limit: 10),
                 model: provider.selectedModel
             )
+
+            try validateRequest(revision)
+            conversationHistory.addMessage(userMessage)
 
             // Create AI response message
             let aiMessage = ConversationMessage(
@@ -1659,17 +1615,19 @@ class AIAssistant: ObservableObject {
         _ query: String, includeContext: Bool = true, includeHistory: Bool = true
     ) -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     guard await isInitialized else {
                         throw AIError.notInitialized
                     }
 
-                    Task { @MainActor in isProcessing = true }
+                    let revision = requestRevision
+                    guard let provider = providerManager.currentProvider else { throw AIError.notInitialized }
+                    isProcessing = true
                     defer { Task { @MainActor in isProcessing = false } }
 
                     // Extract context from current webpage with optional history
-                    let webpageContext = await self.extractCurrentContext()
+                    let webpageContext = includeContext ? await self.extractCurrentContext() : nil
                     if let webpageContext = webpageContext {
                         AppLog.debug(
                             "Streaming: context=\(webpageContext.text.count) q=\(webpageContext.contentQuality)"
@@ -1678,8 +1636,9 @@ class AIAssistant: ObservableObject {
                         AppLog.debug("Streaming: No webpage context extracted")
                     }
 
-                    let context = await self.contextManager.getFormattedContext(
-                        from: webpageContext, includeHistory: includeHistory && includeContext)
+                    let context = includeContext && webpageContext != nil
+                        ? await self.contextManager.getFormattedContext(from: webpageContext, includeHistory: includeHistory)
+                        : nil
                     if let context = context {
                         AppLog.debug("Streaming: formatted context=\(context.count)")
                     } else {
@@ -1687,15 +1646,15 @@ class AIAssistant: ObservableObject {
                     }
 
                     // Process with current provider
-                    guard let provider = providerManager.currentProvider else {
-                        throw AIError.inferenceError("No AI provider available")
-                    }
+                    try validateRequest(revision)
                     let stream = try await provider.generateStreamingResponse(
                         query: query,
                         context: context,
                         conversationHistory: conversationHistory.getRecentMessages(limit: 10),
                         model: provider.selectedModel
                     )
+
+                    try validateRequest(revision)
 
                     // Add user message first
                     let userMessage = ConversationMessage(
@@ -1724,6 +1683,7 @@ class AIAssistant: ObservableObject {
                     let fullResponseBox = Box("")
 
                     for try await chunk in stream {
+                        try validateRequest(revision)
                         fullResponseBox.value += chunk
                         fullResponse = fullResponseBox.value
 
@@ -1749,6 +1709,20 @@ class AIAssistant: ObservableObject {
                     continuation.finish()
 
                 } catch {
+                    if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                        let partial = await streamingText
+                        let messageID = await animationState.streamingMessageId
+                        if let messageID {
+                            conversationHistory.updateMessage(id: messageID, newContent: partial.isEmpty ? "Stopped." : partial)
+                        }
+                        await MainActor.run {
+                            animationState = .idle
+                            streamingText = ""
+                            isProcessing = false
+                        }
+                        continuation.finish()
+                        return
+                    }
                     AppLog.error("Streaming error: \(error.localizedDescription)")
 
                     // Get the message ID before clearing state
@@ -1773,6 +1747,7 @@ class AIAssistant: ObservableObject {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 
@@ -1792,6 +1767,9 @@ class AIAssistant: ObservableObject {
     /// Execute a plan of `PageAction`s through `PageAgent` on the active tab (headed mode).
     /// Includes a minimal permission gate per action.
     func runAgentPlan(_ plan: [PageAction]) async -> [ActionResult] {
+        guard AgentPermissionManager.browserAutomationEnabled else {
+            return plan.map { ActionResult(actionId: $0.id, success: false, message: "Page automation is unavailable.") }
+        }
         let (maybeWebView, host) = await MainActor.run { () -> (WKWebView?, String?) in
             let currentHost = self.tabManager?.activeTab?.url?.host
             return (self.tabManager?.activeTab?.webView, currentHost)
@@ -1888,6 +1866,9 @@ class AIAssistant: ObservableObject {
     /// Example names: navigate, findElements, click, typeText, select, scroll, waitFor.
     func callAgentTool(name: String, arguments: [String: Any]) async -> ToolRegistry.ToolObservation
     {
+        guard AgentPermissionManager.browserAutomationEnabled else {
+            return ToolRegistry.ToolObservation(name: name, ok: false, data: nil, message: "Page automation is unavailable.")
+        }
         // Minimal intent classification: map tool name to PageActionType for policy check
         let intent: PageActionType? = {
             switch name {
@@ -2052,7 +2033,7 @@ class AIAssistant: ObservableObject {
     /// This provides real-time feedback like chat messages for better UX
     func generatePageTLDRStreaming() -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     guard await isInitialized else {
                         throw AIError.notInitialized
@@ -2098,10 +2079,6 @@ class AIAssistant: ObservableObject {
                         """
 
                     // Log full TLDR prompt for debugging
-                    if AppLog.isVerboseEnabled {
-                        AppLog.debug(
-                            "FULL TLDR PROMPT (truncated)\n\(String(tldrPrompt.prefix(1200)))")
-                    }
 
                     // Use current provider streaming response with post-processing for TL;DR
                     guard let provider = providerManager.currentProvider else {
@@ -2119,6 +2096,7 @@ class AIAssistant: ObservableObject {
 
                     // Stream the response with real-time updates
                     for try await chunk in stream {
+                        try Task.checkCancellation()
                         accumulatedResponse += chunk
                         hasYieldedContent = true
 
@@ -2160,6 +2138,7 @@ class AIAssistant: ObservableObject {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 
@@ -2169,7 +2148,7 @@ class AIAssistant: ObservableObject {
         let totalLength = content.count
 
         if AppLog.isVerboseEnabled {
-            AppLog.debug("Garbage detect (len=\(totalLength)): '\(content.prefix(100))…'")
+            AppLog.debug("Checking source quality (\(totalLength) characters)")
         }
 
         // Check for high ratio of JavaScript/HTML artifacts - be more aggressive
@@ -2368,6 +2347,7 @@ class AIAssistant: ObservableObject {
 
     /// Clear conversation history and context
     func clearConversation() {
+        requestRevision += 1
         conversationHistory.clear()
 
         // OPTIMIZATION: Also reset MLXRunner conversation state
@@ -2470,8 +2450,12 @@ class AIAssistant: ObservableObject {
         guard !hasSetupProviderBinding else { return }
         hasSetupProviderBinding = true
         providerManager.$currentProvider
+            .dropFirst()
             .sink { [weak self] _ in
                 guard let self = self else { return }
+                // Prior responses can contain page data. Never carry them across providers.
+                self.requestRevision += 1
+                self.conversationHistory.clear()
                 self.isInitialized = false
                 Task { await self.initialize() }
             }
@@ -2484,6 +2468,11 @@ class AIAssistant: ObservableObject {
             return nil
         }
 
+        guard let tab = tabManager.activeTab, !tab.isIncognito else { return nil }
+        if let external = providerManager.currentProvider as? ExternalAPIProvider,
+           !AIContextPolicy.canSharePage(providerID: external.providerId, isPrivate: tab.isIncognito) {
+            return nil
+        }
         return await contextManager.extractCurrentPageContext(from: tabManager)
     }
 
@@ -2505,61 +2494,18 @@ class AIAssistant: ObservableObject {
 
     @MainActor
     private func setupBindings() {
-        // Bind conversation history changes - SwiftUI automatically handles UI updates for @Published properties
-        conversationHistory.$messageCount
-            .receive(on: DispatchQueue.main)
-            .sink { _ in
-                // SwiftUI automatically triggers UI updates when @Published properties change
-                // Removed manual objectWillChange.send() to prevent unnecessary re-renders
-            }
+        NotificationCenter.default.publisher(for: .aiPageSharingChanged)
+            .sink { [weak self] _ in self?.clearConversation() }
             .store(in: &cancellables)
+        conversationHistory.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
 
-        // Bind MLX model status
-        mlxModelService.$isModelReady
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isReady in
-                Task { @MainActor [weak self] in
-                    if !isReady && self?.isInitialized == true {
-                        self?.isInitialized = false
-                    }
-                }
-                if !isReady {
-                    Task { await self?.updateStatus("MLX AI model not available") }
-                }
-            }
-            .store(in: &cancellables)
-
-        // Bind download progress for status updates
-        mlxModelService.$downloadProgress
-            .receive(on: DispatchQueue.main)
-            .removeDuplicates()
-            .sink { [weak self] progress in
-                if progress > 0 && progress < 1.0 {
-                    if AppLog.isVerboseEnabled {
-                        AppLog.debug("MLX download progress: \(progress * 100)%")
-                    }
-                    Task {
-                        await self?.updateStatus(
-                            "Downloading MLX AI model: \(Int(progress * 100))%")
-                    }
-                }
-            }
-            .store(in: &cancellables)
-
-        // Bind MLX wrapper status
-        mlxWrapper.$isInitialized
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] mlxInitialized in
-                Task { @MainActor [weak self] in
-                    if !mlxInitialized && self?.aiConfiguration.framework == .mlx {
-                        self?.isInitialized = false
-                    }
-                }
-                if !mlxInitialized && self?.aiConfiguration.framework == .mlx {
-                    Task { await self?.updateStatus("MLX framework not available") }
-                }
-            }
-            .store(in: &cancellables)
+    private func validateRequest(_ revision: Int) throws {
+        try Task.checkCancellation()
+        guard revision == requestRevision else { throw CancellationError() }
     }
 
     private func updateStatus(_ status: String) async {

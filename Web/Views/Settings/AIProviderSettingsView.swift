@@ -1,687 +1,222 @@
 import SwiftUI
 
-/// AI Provider settings view for configuring external API keys and provider selection
-/// Integrates with secure keychain storage and provider management
 struct AIProviderSettingsView: View {
-
-    @StateObject private var providerManager = AIProviderManager.shared
-    @State private var selectedProvider: AIProvider?
-    @State private var showingAPIKeyInput = false
-    @State private var showingProviderSelection = false
-    @State private var pendingAPIKey = ""
-    @State private var pendingProviderType: SecureKeyStorage.AIProvider?
-    @State private var statusMessage = ""
-    @State private var isError = false
-    @State private var isValidating = false
-
-    private let secureStorage = SecureKeyStorage.shared
+    @ObservedObject private var providers = AIProviderManager.shared
+    @ObservedObject private var runner = SimplifiedMLXRunner.shared
+    @State private var keyProvider: SecureKeyStorage.AIProvider?
+    @State private var showingKeySheet = false
+    @State private var pendingKey = ""
+    @State private var status: String?
+    @State private var keyError: String?
+    @State private var switchingName: String?
+    private let storage = SecureKeyStorage.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // Header
-            HStack {
-                Image(systemName: "brain.head.profile")
-                    .font(.title2)
-                    .foregroundColor(.blue)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("AI Provider")
-                        .font(.headline)
-                    Text("Configure AI providers and API keys")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+        SettingsStack {
+            SettingsCard("Use a model", icon: "cpu") {
+                if let local = providers.availableProviders.first(where: { $0.providerType == .local }) {
+                    providerRow(local, detail: "On this Mac · no API key")
                 }
-
-                Spacer()
-            }
-
-            Divider()
-
-            // Current Provider Selection
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Active Provider")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                HStack {
-                    // Provider icon and info
-                    HStack(spacing: 12) {
-                        Image(systemName: providerIcon(for: providerManager.currentProvider))
-                            .font(.title2)
-                            .foregroundColor(
-                                providerColor(for: providerManager.currentProvider)
-                            )
-                            .frame(width: 32, height: 32)
-                            .background(
-                                Circle()
-                                    .fill(
-                                        providerColor(for: providerManager.currentProvider)
-                                            .opacity(0.1))
-                            )
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(providerManager.currentProvider?.displayName ?? "None")
-                                .font(.system(.body, design: .rounded))
-                                .fontWeight(.medium)
-
-                            Text(providerTypeDescription(for: providerManager.currentProvider))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Spacer()
-
-                    // Switch Provider Button
-                    Button("Switch") {
-                        showingProviderSelection = true
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(providerManager.availableProviders.count <= 1)
-                }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color(NSColor.controlBackgroundColor))
-                )
-            }
-
-            // Provider Configuration
-            if let currentProvider = providerManager.currentProvider {
-                providerConfigurationView(for: currentProvider)
-            }
-
-            // Available Providers
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Available Providers")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), spacing: 16), count: 2),
-                    spacing: 16
-                ) {
-                    ForEach(SecureKeyStorage.AIProvider.allCases, id: \.self) { providerType in
-                        providerCard(for: providerType)
-                    }
-                }
-            }
-
-            // Status Message
-            if !statusMessage.isEmpty {
-                HStack {
-                    Image(systemName: isError ? "exclamationmark.triangle" : "checkmark.circle")
-                        .foregroundColor(isError ? .red : .green)
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundColor(isError ? .red : .green)
-                }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill((isError ? Color.red : Color.green).opacity(0.1))
-                )
-            }
-
-            Spacer()
-        }
-        .padding()
-        .sheet(isPresented: $showingAPIKeyInput) {
-            apiKeyInputSheet()
-        }
-        .sheet(isPresented: $showingProviderSelection) {
-            providerSelectionSheet()
-        }
-        .onAppear {
-            selectedProvider = providerManager.currentProvider
-        }
-    }
-
-    // MARK: - Provider Configuration
-
-    @ViewBuilder
-    private func providerConfigurationView(for provider: AIProvider) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Provider Settings")
-                .font(.subheadline)
-                .fontWeight(.medium)
-
-            // Model Selection
-            modelSelectionView(for: provider)
-
-            // Usage Statistics
-            usageStatisticsView(for: provider)
-
-            // Link to Usage & Billing
-            Button(action: {
-                NotificationCenter.default.post(name: .openUsageBilling, object: nil)
-            }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "chart.bar").foregroundColor(.blue)
-                    Text("Open Usage & Billing")
-                }
-            }
-            .buttonStyle(.plain)
-        }
-        .padding()
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor.controlBackgroundColor))
-        )
-    }
-
-    @ViewBuilder
-    private func modelSelectionView(for provider: AIProvider) -> some View {
-        if !provider.availableModels.isEmpty {
-            HStack {
-                Text("Model:")
-                    .font(.system(.body, design: .rounded))
-
-                Spacer()
-
-                modelPicker(for: provider)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func modelPicker(for provider: AIProvider) -> some View {
-        if let currentProvider = providerManager.currentProvider,
-            currentProvider.providerId == provider.providerId
-        {
-            Picker(
-                "Model",
-                selection: Binding(
-                    get: { currentProvider.selectedModel?.id ?? "" },
-                    set: { modelId in
-                        if let model = currentProvider.availableModels.first(where: {
-                            $0.id == modelId
-                        }) {
-                            providerManager.updateSelectedModel(model)
-                        }
-                    }
-                )
-            ) {
-                ForEach(currentProvider.availableModels, id: \.id) { model in
-                    modelPickerItem(model)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(maxWidth: 200)
-        } else {
-            Text("Provider not active")
-                .foregroundColor(.secondary)
-        }
-    }
-
-    @ViewBuilder
-    private func modelPickerItem(_ model: AIModel) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(model.name)
-                .font(.system(.body, design: .rounded))
-            if let pricing = model.pricing {
-                let inUSD = pricing.inputPerMTokensUSD ?? 0
-                let outUSD = pricing.outputPerMTokensUSD ?? 0
-                Text(String(format: "$%.2f /1M in, $%.2f /1M out", inUSD, outUSD))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else if let cost = model.costPerToken {
-                Text("$\(String(format: "%.6f", cost))/token")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            HStack(spacing: 6) {
-                ForEach(model.capabilities, id: \.self) { cap in
-                    Text(cap.displayName)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4).fill(
-                                Color(NSColor.controlBackgroundColor)))
-                }
-                Spacer()
-                Text("ctx \(model.contextWindow)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .tag(model.id)
-    }
-
-    @ViewBuilder
-    private func usageStatisticsView(for provider: AIProvider) -> some View {
-        let stats = provider.getUsageStatistics()
-        if stats.requestCount > 0 {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Usage Statistics")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundColor(.secondary)
-
-                statisticsHStack(stats)
-            }
-            .padding()
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.5))
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func statisticsHStack(_ stats: AIUsageStatistics) -> some View {
-        HStack {
-            statItem("Requests", value: "\(stats.requestCount)")
-            Spacer()
-            statItem("Tokens", value: "\(stats.tokenCount)")
-            Spacer()
-            if let cost = stats.estimatedCost {
-                statItem("Cost", value: "$\(String(format: "%.4f", cost))")
-            } else {
-                statItem("Cost", value: "Free")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statItem(_ label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.caption)
-                .fontWeight(.medium)
-        }
-    }
-
-    // MARK: - Provider Cards
-
-    @ViewBuilder
-    private func providerCard(for providerType: SecureKeyStorage.AIProvider) -> some View {
-        let hasKey = secureStorage.hasAPIKey(for: providerType)
-        let isActive = providerManager.currentProvider?.providerId == providerType.rawValue
-
-        VStack(spacing: 12) {
-            // Provider Icon
-            Image(systemName: providerTypeIcon(for: providerType))
-                .font(.title)
-                .foregroundColor(providerTypeColor(for: providerType))
-                .frame(width: 40, height: 40)
-                .background(
-                    Circle()
-                        .fill(providerTypeColor(for: providerType).opacity(0.1))
-                )
-
-            // Provider Info
-            VStack(spacing: 4) {
-                Text(providerType.displayName)
-                    .font(.system(.subheadline, design: .rounded))
-                    .fontWeight(.medium)
-                    .multilineTextAlignment(.center)
-
-                HStack(spacing: 8) {
-                    // Status indicator
-                    Circle()
-                        .fill(hasKey ? .green : .gray)
-                        .frame(width: 6, height: 6)
-
-                    Text(hasKey ? "Configured" : "Not configured")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-
-                    if isActive {
-                        Text("• Active")
-                            .font(.caption2)
-                            .foregroundColor(.blue)
-                    }
-                }
-            }
-
-            // Action Buttons
-            HStack(spacing: 8) {
-                if hasKey {
-                    Button("Remove") {
-                        removeAPIKey(for: providerType)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .foregroundColor(.red)
-                } else {
-                    Button("Add Key") {
-                        pendingProviderType = providerType
-                        showingAPIKeyInput = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-            }
-        }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor.controlBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(isActive ? Color.blue : Color.clear, lineWidth: 2)
-                )
-        )
-    }
-
-    // MARK: - Sheets
-
-    @ViewBuilder
-    private func apiKeyInputSheet() -> some View {
-        VStack(spacing: 20) {
-            // Header
-            HStack {
-                VStack(alignment: .leading) {
-                    Text("Add API Key")
-                        .font(.headline)
-                    if let providerType = pendingProviderType {
-                        Text("Enter your \(providerType.displayName) API key")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                Spacer()
-                Button("Cancel") {
-                    showingAPIKeyInput = false
-                    pendingAPIKey = ""
-                    pendingProviderType = nil
-                }
-                .buttonStyle(.plain)
-            }
-
-            // API Key Input
-            VStack(alignment: .leading, spacing: 8) {
-                Text("API Key")
-                    .font(.caption)
-                    .fontWeight(.medium)
-
-                SecureField("Paste your API key here", text: $pendingAPIKey)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-
-                if let providerType = pendingProviderType {
-                    Text(apiKeyHelpText(for: providerType))
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-            }
-
-            // Action Buttons
-            HStack {
-                Spacer()
-
-                Button("Cancel") {
-                    showingAPIKeyInput = false
-                    pendingAPIKey = ""
-                    pendingProviderType = nil
-                }
-                .buttonStyle(.bordered)
-
-                Button("Save") {
-                    Task {
-                        await saveAPIKey()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(pendingAPIKey.isEmpty || isValidating)
-            }
-
-            if isValidating {
-                HStack {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Validating API key...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-        }
-        .padding()
-        .frame(width: 400)
-    }
-
-    @ViewBuilder
-    private func providerSelectionSheet() -> some View {
-        VStack(spacing: 20) {
-            // Header
-            HStack {
-                Text("Select AI Provider")
-                    .font(.headline)
-                Spacer()
-                Button("Cancel") {
-                    showingProviderSelection = false
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Provider List
-            VStack(spacing: 12) {
-                ForEach(providerManager.availableProviders, id: \.providerId) { provider in
-                    Button(action: {
-                        Task {
-                            await switchToProvider(provider)
-                        }
-                    }) {
-                        HStack {
-                            Image(systemName: providerIcon(for: provider))
-                                .foregroundColor(providerColor(for: provider))
-                                .frame(width: 24)
-
+                ForEach(SecureKeyStorage.AIProvider.allCases, id: \.self) { type in
+                    Divider()
+                    if let provider = providers.availableProviders.first(where: { $0.providerId == type.rawValue }) {
+                        providerRow(provider, detail: "API key connected", keyType: type)
+                    } else {
+                        HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.displayName)
-                                    .font(.system(.body, design: .rounded))
-                                    .fontWeight(.medium)
-
-                                Text(providerTypeDescription(for: provider))
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                Text(type.displayName).fontWeight(.medium)
+                                Text("Your API key").font(.caption).foregroundStyle(.secondary)
                             }
-
                             Spacer()
-
-                            if provider.providerId == providerManager.currentProvider?.providerId {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(.blue)
-                            }
+                            Button("Connect") { beginKeyEntry(type) }.buttonStyle(.glass)
                         }
-                        .padding()
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color(NSColor.controlBackgroundColor))
-                        )
                     }
-                    .buttonStyle(.plain)
+                }
+                if providers.isInitializing {
+                    Divider()
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading \(switchingName ?? "provider")…").foregroundStyle(.secondary)
+                    }
+                    if runner.isLoading {
+                        ProgressView(value: Double(runner.loadProgress))
+                        Text("The first download can take a few minutes.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
-
-            if providerManager.isInitializing {
+            if let provider = providers.currentProvider {
+                SettingsCard("\(provider.displayName)", icon: "slider.horizontal.3") {
+                    HStack {
+                        Text("Model")
+                        Spacer()
+                        Picker("Model", selection: Binding(
+                            get: { provider.selectedModel?.id ?? "" },
+                            set: { id in
+                                guard let model = provider.availableModels.first(where: { $0.id == id }) else { return }
+                                providers.updateSelectedModel(model)
+                            })) {
+                                ForEach(provider.availableModels, id: \.id) { model in
+                                    Text(model.name).tag(model.id)
+                                }
+                            }
+                            .labelsHidden().frame(maxWidth: 260)
+                            .disabled(providers.isInitializing)
+                    }
+                    if let model = provider.selectedModel, let price = model.pricing,
+                       let input = price.inputPerMTokensUSD, let output = price.outputPerMTokensUSD {
+                        Text("Per million tokens: \(input, format: .currency(code: "USD")) in · \(output, format: .currency(code: "USD")) out")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if provider.providerType == .external {
+                        Divider()
+                        CloudPageSharingToggle(providerID: provider.providerId, providerName: provider.displayName)
+                    } else {
+                        Text("Page text and replies stay on this Mac. Private pages are excluded.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            SettingsCard("API billing", icon: "creditcard") {
+                Text("ChatGPT, Codex and Claude subscriptions don't cover these API requests.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Switching provider...")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Text("Keys are stored in macOS Keychain.").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Usage & limits") { SettingsView.open(.usageBilling) }.buttonStyle(.glass)
                 }
             }
-        }
-        .padding()
-        .frame(width: 350)
-    }
-
-    // MARK: - Actions
-
-    private func saveAPIKey() async {
-        guard let providerType = pendingProviderType else { return }
-
-        isValidating = true
-        isError = false
-        statusMessage = ""
-
-        do {
-            // Store API key
-            try secureStorage.storeAPIKey(pendingAPIKey, for: providerType)
-
-            // Add provider to available list
-            providerManager.addExternalProvider(providerType)
-
-            // Switch to new provider if it's the only external one
-            if providerManager.currentProvider?.providerType == .local,
-                let newProvider = providerManager.availableProviders.first(where: {
-                    ($0 as? ExternalAPIProvider)?.apiProviderType == providerType
-                })
-            {
-                try await providerManager.switchProvider(to: newProvider)
+            if let status {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled).padding(.horizontal, 4)
             }
-
-            statusMessage = "\(providerType.displayName) API key saved successfully"
-            isError = false
-
-            // Close sheet
-            showingAPIKeyInput = false
-            pendingAPIKey = ""
-            pendingProviderType = nil
-
-        } catch {
-            statusMessage = "Failed to save API key: \(error.localizedDescription)"
-            isError = true
         }
+        .sheet(isPresented: $showingKeySheet, onDismiss: {
+            pendingKey = ""
+            keyError = nil
+        }) { keySheet }
+    }
 
-        isValidating = false
-
-        // Clear status after 3 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            statusMessage = ""
+    private func providerRow(_ provider: AIProvider, detail: String,
+                             keyType: SecureKeyStorage.AIProvider? = nil) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.displayName).fontWeight(.medium)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if providers.currentProvider?.providerId == provider.providerId {
+                Label("Selected", systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Use") { switchProvider(provider) }
+                    .buttonStyle(.glass).disabled(providers.isInitializing)
+                    .accessibilityLabel("Use \(provider.displayName)")
+            }
+            if let keyType {
+                Menu {
+                    Button("Replace API key") { beginKeyEntry(keyType) }
+                    Button("Remove API key", role: .destructive) { removeKey(keyType) }
+                } label: { Image(systemName: "ellipsis").frame(width: 20) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .disabled(providers.isInitializing).help("\(provider.displayName) options")
+            }
         }
     }
 
-    private func removeAPIKey(for providerType: SecureKeyStorage.AIProvider) {
+    private var keySheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Connect \(keyProvider?.displayName ?? "provider")").font(.title3.weight(.semibold))
+            SecureField("API key", text: $pendingKey).textFieldStyle(.roundedBorder)
+                .onSubmit(saveKey)
+                .accessibilityLabel("API key")
+            HStack {
+                if let type = keyProvider { Link("Get an API key", destination: keyURL(type)) }
+                Spacer()
+                Text("Saved in Keychain").font(.caption).foregroundStyle(.secondary)
+            }
+            if let keyError { Text(keyError).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingKeySheet = false }.keyboardShortcut(.cancelAction)
+                Button("Save key", action: saveKey).buttonStyle(.glassProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(pendingKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24).frame(width: 410)
+    }
+
+    private func beginKeyEntry(_ type: SecureKeyStorage.AIProvider) {
+        keyProvider = type
+        pendingKey = ""
+        keyError = nil
+        showingKeySheet = true
+    }
+
+    private func saveKey() {
+        guard let type = keyProvider else { return }
         do {
-            try secureStorage.deleteAPIKey(for: providerType)
-            providerManager.removeExternalProvider(providerType)
-
-            statusMessage = "\(providerType.displayName) API key removed"
-            isError = false
-
-        } catch {
-            statusMessage = "Failed to remove API key: \(error.localizedDescription)"
-            isError = true
-        }
-
-        // Clear status after 3 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            statusMessage = ""
-        }
+            try storage.storeAPIKey(pendingKey.trimmingCharacters(in: .whitespacesAndNewlines), for: type)
+            providers.addExternalProvider(type)
+            pendingKey = ""
+            showingKeySheet = false
+            status = "Key saved. Choose Use to connect."
+        } catch { keyError = error.localizedDescription }
     }
 
-    private func switchToProvider(_ provider: AIProvider) async {
+    private func removeKey(_ type: SecureKeyStorage.AIProvider) {
         do {
-            try await providerManager.switchProvider(to: provider)
-            showingProviderSelection = false
+            try storage.deleteAPIKey(for: type)
+            providers.removeExternalProvider(type)
+            status = "\(type.displayName) key removed."
+        } catch { status = error.localizedDescription }
+    }
 
-            statusMessage = "Switched to \(provider.displayName)"
-            isError = false
-
-        } catch {
-            statusMessage = "Failed to switch provider: \(error.localizedDescription)"
-            isError = true
-        }
-
-        // Clear status after 3 seconds
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            statusMessage = ""
+    private func switchProvider(_ provider: AIProvider) {
+        guard !providers.isInitializing else { return }
+        switchingName = provider.displayName
+        status = nil
+        Task {
+            do { try await providers.switchProvider(to: provider) }
+            catch { status = error.localizedDescription }
+            switchingName = nil
         }
     }
 
-    // MARK: - Helper Methods
-
-    private func providerIcon(for provider: AIProvider?) -> String {
-        guard let provider = provider else { return "questionmark.circle" }
-
-        switch provider.providerId {
-        case "local_mlx":
-            return "cpu"
-        case "openai":
-            return "brain.head.profile"
-        case "anthropic":
-            return "person.crop.circle.fill"
-        case "google_gemini":
-            return "diamond.fill"
-        default:
-            return "sparkles"
-        }
-    }
-
-    private func providerColor(for provider: AIProvider?) -> Color {
-        guard let provider = provider else { return .gray }
-
-        switch provider.providerId {
-        case "local_mlx":
-            return .blue
-        case "openai":
-            return .green
-        case "anthropic":
-            return .orange
-        case "google_gemini":
-            return .purple
-        default:
-            return .gray
-        }
-    }
-
-    private func providerTypeIcon(for providerType: SecureKeyStorage.AIProvider) -> String {
-        switch providerType {
-        case .openai:
-            return "brain.head.profile"
-        case .anthropic:
-            return "person.crop.circle.fill"
-        case .gemini:
-            return "diamond.fill"
-        }
-    }
-
-    private func providerTypeColor(for providerType: SecureKeyStorage.AIProvider) -> Color {
-        switch providerType {
-        case .openai:
-            return .green
-        case .anthropic:
-            return .orange
-        case .gemini:
-            return .purple
-        }
-    }
-
-    private func providerTypeDescription(for provider: AIProvider?) -> String {
-        guard let provider = provider else { return "No provider selected" }
-
-        switch provider.providerType {
-        case .local:
-            return "Private, runs locally on your Mac"
-        case .external:
-            return "Cloud-based API service"
-        }
-    }
-
-    private func apiKeyHelpText(for providerType: SecureKeyStorage.AIProvider) -> String {
-        switch providerType {
-        case .openai:
-            return "Get your API key from platform.openai.com/api-keys"
-        case .anthropic:
-            return "Get your API key from console.anthropic.com/settings/keys"
-        case .gemini:
-            return "Get your API key from aistudio.google.com/app/apikey"
+    private func keyURL(_ type: SecureKeyStorage.AIProvider) -> URL {
+        switch type {
+        case .openai: return URL(string: "https://platform.openai.com/api-keys")!
+        case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys")!
+        case .gemini: return URL(string: "https://aistudio.google.com/app/apikey")!
         }
     }
 }
 
-// MARK: - Preview
+/// Explicit consent is separate for each cloud provider and starts off.
+struct CloudPageSharingToggle: View {
+    let providerID: String
+    let providerName: String
+    @AppStorage private var enabled: Bool
 
-#Preview {
-    AIProviderSettingsView()
-        .frame(width: 600, height: 700)
+    init(providerID: String, providerName: String) {
+        self.providerID = providerID
+        self.providerName = providerName
+        _enabled = AppStorage(wrappedValue: false, AIContextPolicy.sharingKey(for: providerID))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Share pages with \(providerName)", isOn: $enabled)
+                .toggleStyle(.switch).controlSize(.small)
+            Text("Sends page text with your questions and summaries. Private pages and browsing history stay excluded.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: enabled) { _, _ in
+            NotificationCenter.default.post(name: .aiPageSharingChanged, object: providerID)
+        }
+    }
+}
+
+extension Notification.Name {
+    static let aiPageSharingChanged = Notification.Name("aiPageSharingChanged")
 }

@@ -40,7 +40,7 @@ class ContextManager: ObservableObject {
     private let maxHistoryContentLength = 3000  // Limit history context size
 
     // Privacy settings for history context
-    @Published var isHistoryContextEnabled: Bool = true
+    @Published var isHistoryContextEnabled: Bool = false
     @Published var historyContextScope: HistoryContextScope = .recent
 
     private init() {
@@ -52,6 +52,7 @@ class ContextManager: ObservableObject {
     /// Extract context from the currently active tab
     func extractCurrentPageContext(from tabManager: TabManager) async -> WebpageContext? {
         guard let activeTab = tabManager.activeTab,
+            !activeTab.isIncognito,
             let webView = activeTab.webView
         else {
             if AppLog.isVerboseEnabled {
@@ -79,6 +80,8 @@ class ContextManager: ObservableObject {
 
     /// Extract context from specific WebView with intelligent caching
     func extractPageContext(from webView: WKWebView, tab: Tab) async -> WebpageContext? {
+        // Private pages must never enter the shared AI context cache or history.
+        guard !tab.isIncognito, webView.configuration.websiteDataStore.isPersistent else { return nil }
         guard let url = await webView.url?.absoluteString else {
             if AppLog.isVerboseEnabled { AppLog.debug("No URL for context extraction") }
             return nil

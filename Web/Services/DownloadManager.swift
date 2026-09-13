@@ -16,12 +16,29 @@ class DownloadManager: NSObject, ObservableObject {
     @Published var downloadHistory: [DownloadHistoryItem] = []
 
     // MARK: - Security Services Integration
-    @Published var securityScanEnabled: Bool = true
-    @Published var showSecurityWarnings: Bool = true
-    @Published var autoQuarantineDownloads: Bool = true
+    @Published var securityScanEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(securityScanEnabled, forKey: "DownloadManager.SecurityScanEnabled") }
+    }
+    @Published var showSecurityWarnings: Bool = true {
+        didSet { UserDefaults.standard.set(showSecurityWarnings, forKey: "DownloadManager.ShowSecurityWarnings") }
+    }
+    @Published var autoQuarantineDownloads: Bool = true {
+        didSet { UserDefaults.standard.set(autoQuarantineDownloads, forKey: "DownloadManager.AutoQuarantineDownloads") }
+    }
 
     // WKWebView integration
     private var webViewDownloads: [String: WKDownload] = [:]
+    private var webViewContexts: [String: WebKitDownloadContext] = [:]
+
+    private final class WebKitDownloadContext {
+        let isPrivate: Bool
+        var model: Download?
+        var stagedFile: StagedDownloadFile?
+        var mimeType: String?
+        var observations: [NSKeyValueObservation] = []
+
+        init(isPrivate: Bool) { self.isPrivate = isPrivate }
+    }
 
     // Security services
     private let fileSecurityValidator: FileSecurityValidator
@@ -41,7 +58,7 @@ class DownloadManager: NSObject, ObservableObject {
     }
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.default
+        let config = URLSessionConfiguration.ephemeral
         config.httpMaximumConnectionsPerHost = 4
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
@@ -73,13 +90,16 @@ class DownloadManager: NSObject, ObservableObject {
         AppLog.debug("DownloadManager init (enhanced security)")
     }
 
-    func startDownload(from url: URL, suggestedFilename: String? = nil) {
+    func startDownload(from url: URL, suggestedFilename: String? = nil, isPrivate: Bool = false) {
+        guard ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil else { return }
         // ENHANCED SECURITY: Comprehensive security validation pipeline
         Task { @MainActor in
-            let filename = suggestedFilename ?? url.lastPathComponent
+            let filename = BrowserSecurityPolicy.downloadFilename(suggestedFilename ?? url.lastPathComponent)
 
             // Log download initiation
-            securityMonitor.logDownloadSecurityEvent(
+            logDownloadSecurityEvent(
+                isPrivate: isPrivate,
                 filename: filename,
                 sourceURL: url,
                 eventType: .downloadInitiated,
@@ -88,21 +108,22 @@ class DownloadManager: NSObject, ObservableObject {
             )
 
             // Step 1: Safe Browsing URL validation
-            let safetyResult = await SafeBrowsingManager.shared.checkURLSafety(url)
+            let safetyResult = await SafeBrowsingManager.shared.checkURLSafety(url, allowRemoteLookup: !isPrivate)
 
             switch safetyResult {
             case .safe:
                 // URL is safe - proceed with comprehensive security validation
                 await self.performSecurityValidationAndDownload(
-                    from: url, suggestedFilename: suggestedFilename)
+                    from: url, suggestedFilename: suggestedFilename, isPrivate: isPrivate)
 
             case .unsafe(let threat):
                 // URL is malicious - block download and log security event
                 self.logger.warning(
-                    "Safe Browsing blocked malicious download: \(url.absoluteString) (Threat: \(threat.threatType.userFriendlyName))"
+                    "Safe Browsing blocked a download (Threat: \(threat.threatType.userFriendlyName))"
                 )
 
-                securityMonitor.logDownloadSecurityEvent(
+                logDownloadSecurityEvent(
+                    isPrivate: isPrivate,
                     filename: filename,
                     sourceURL: url,
                     eventType: .threatBlocked,
@@ -127,10 +148,11 @@ class DownloadManager: NSObject, ObservableObject {
             case .unknown:
                 // Unable to determine safety - proceed with caution and enhanced security
                 self.logger.warning(
-                    "Safe Browsing check failed for download URL: \(url.absoluteString) - proceeding with enhanced security"
+                    "Download reputation could not be checked"
                 )
 
-                securityMonitor.logDownloadSecurityEvent(
+                logDownloadSecurityEvent(
+                    isPrivate: isPrivate,
                     filename: filename,
                     sourceURL: url,
                     eventType: .suspiciousActivity,
@@ -139,16 +161,16 @@ class DownloadManager: NSObject, ObservableObject {
                 )
 
                 await self.performSecurityValidationAndDownload(
-                    from: url, suggestedFilename: suggestedFilename)
+                    from: url, suggestedFilename: suggestedFilename, isPrivate: isPrivate)
             }
         }
     }
 
     @MainActor
-    private func performSecurityValidationAndDownload(from url: URL, suggestedFilename: String?)
+    private func performSecurityValidationAndDownload(from url: URL, suggestedFilename: String?, isPrivate: Bool = false)
         async
     {
-        let filename = suggestedFilename ?? url.lastPathComponent
+        let filename = BrowserSecurityPolicy.downloadFilename(suggestedFilename ?? url.lastPathComponent)
 
         // Step 2: File security analysis
         let securityAnalysis = await fileSecurityValidator.analyzeFileSecurity(
@@ -158,7 +180,8 @@ class DownloadManager: NSObject, ObservableObject {
             expectedFileSize: -1
         )
 
-        securityMonitor.logDownloadSecurityEvent(
+        logDownloadSecurityEvent(
+            isPrivate: isPrivate,
             filename: filename,
             sourceURL: url,
             eventType: .securityScanStarted,
@@ -176,7 +199,8 @@ class DownloadManager: NSObject, ObservableObject {
                 "🚫 Download blocked by security policy: \(filename) (Risk: \(securityAnalysis.riskLevel.displayName))"
             )
 
-            securityMonitor.logDownloadSecurityEvent(
+            logDownloadSecurityEvent(
+                isPrivate: isPrivate,
                 filename: filename,
                 sourceURL: url,
                 eventType: .threatBlocked,
@@ -201,7 +225,7 @@ class DownloadManager: NSObject, ObservableObject {
         // Step 4: Check if user confirmation is required
         if securityAnalysis.requiresUserConfirmation && showSecurityWarnings {
             // Create download but don't start yet - wait for user confirmation
-            let download = createDownload(from: url, suggestedFilename: suggestedFilename)
+            let download = createDownload(from: url, suggestedFilename: suggestedFilename, isPrivate: isPrivate)
 
             // Show security warning with user choice
             showSecurityWarning(securityAnalysis: securityAnalysis, scanResult: nil) {
@@ -217,7 +241,7 @@ class DownloadManager: NSObject, ObservableObject {
             }
         } else {
             // Low risk or warnings disabled - proceed directly
-            let download = createDownload(from: url, suggestedFilename: suggestedFilename)
+            let download = createDownload(from: url, suggestedFilename: suggestedFilename, isPrivate: isPrivate)
             await proceedWithSecureDownload(download: download, securityAnalysis: securityAnalysis)
         }
     }
@@ -241,7 +265,8 @@ class DownloadManager: NSObject, ObservableObject {
 
         AppLog.debug("Started secure download: \(download.filename)")
 
-        securityMonitor.logDownloadSecurityEvent(
+        logDownloadSecurityEvent(
+            isPrivate: download.isPrivate,
             filename: download.filename,
             sourceURL: download.url,
             eventType: .securityScanCompleted,
@@ -254,15 +279,26 @@ class DownloadManager: NSObject, ObservableObject {
         )
     }
 
-    private func createDownload(from url: URL, suggestedFilename: String?) -> Download {
-        let filename = suggestedFilename ?? url.lastPathComponent
+    private func logDownloadSecurityEvent(
+        isPrivate: Bool, filename: String, sourceURL: URL,
+        eventType: SecurityMonitor.SecurityEvent.EventType,
+        severity: SecurityMonitor.SecurityEvent.Severity, details: [String: Any] = [:]
+    ) {
+        guard !isPrivate else { return }
+        securityMonitor.logDownloadSecurityEvent(filename: filename, sourceURL: sourceURL,
+            eventType: eventType, severity: severity, details: details)
+    }
+
+    private func createDownload(from url: URL, suggestedFilename: String?, isPrivate: Bool) -> Download {
+        let filename = BrowserSecurityPolicy.downloadFilename(suggestedFilename ?? url.lastPathComponent)
         let destinationURL = downloadDirectory.appendingPathComponent(filename)
         let finalURL = createUniqueFileURL(for: destinationURL)
 
         return Download(
             url: url,
             destinationURL: finalURL,
-            filename: finalURL.lastPathComponent
+            filename: finalURL.lastPathComponent,
+            isPrivate: isPrivate
         )
     }
 
@@ -276,7 +312,7 @@ class DownloadManager: NSObject, ObservableObject {
         pendingSecurityWarning = PendingSecurityWarning(
             download: Download(
                 url: securityAnalysis.url,
-                destinationURL: downloadDirectory.appendingPathComponent(securityAnalysis.filename),
+                destinationURL: downloadDirectory.appendingPathComponent(BrowserSecurityPolicy.downloadFilename(securityAnalysis.filename)),
                 filename: securityAnalysis.filename
             ),
             securityAnalysis: securityAnalysis,
@@ -297,41 +333,44 @@ class DownloadManager: NSObject, ObservableObject {
     }
 
     func pauseDownload(_ download: Download) {
-        download.task?.suspend()
+        guard let task = download.task, download.status == .downloading else { return }
+        task.suspend()
         download.status = .paused
     }
 
     func resumeDownload(_ download: Download) {
-        download.task?.resume()
+        guard let task = download.task, download.status == .paused else { return }
+        task.resume()
         download.status = .downloading
     }
 
     func cancelDownload(_ download: Download) {
         download.task?.cancel()
+        if let identifier = download.webKitDownloadId,
+           let webDownload = webViewDownloads.removeValue(forKey: identifier) {
+            webDownload.delegate = nil
+            webDownload.cancel { _ in }
+        }
+        if let identifier = download.webKitDownloadId {
+            webViewContexts.removeValue(forKey: identifier)
+        }
         download.status = .cancelled
         updateActiveDownloadsCount()
     }
 
     func removeDownload(_ download: Download) {
+        if download.status == .downloading || download.status == .paused {
+            cancelDownload(download)
+        }
         if let index = downloads.firstIndex(where: { $0.id == download.id }) {
             downloads.remove(at: index)
         }
     }
 
-    private func createUniqueFileURL(for url: URL) -> URL {
-        var finalURL = url
-        var counter = 1
-
-        while FileManager.default.fileExists(atPath: finalURL.path) {
-            let name = url.deletingPathExtension().lastPathComponent
-            let ext = url.pathExtension
-            finalURL = url.deletingLastPathComponent()
-                .appendingPathComponent("\(name) (\(counter))")
-                .appendingPathExtension(ext)
-            counter += 1
-        }
-
-        return finalURL
+    private func createUniqueFileURL(for url: URL, excluding id: UUID? = nil) -> URL {
+        DownloadFileDestination.uniqueURL(for: url, reservedURLs: downloads.filter {
+            $0.id != id && ($0.status == .downloading || $0.status == .paused)
+        }.map(\.destinationURL))
     }
 
     private func updateActiveDownloadsCount() {
@@ -362,55 +401,26 @@ class DownloadManager: NSObject, ObservableObject {
 
     // MARK: - WKWebView Integration
 
-    /// Handle WKDownload from WKWebView
-    func handleWebViewDownload(_ download: WKDownload) {
-        guard let url = download.originalRequest?.url else {
-            logger.error("WKDownload missing original request URL")
+    /// Continue the original WebKit request, preserving its cookies and request body.
+    func handleWebViewDownload(_ download: WKDownload, isPrivate: Bool = false) {
+        guard download.originalRequest?.url != nil else {
+            download.cancel { _ in }
             return
         }
-
-        // Safely extract filename with fallback
-        let filename = url.lastPathComponent.isEmpty ? "download" : url.lastPathComponent
-        let downloadId = UUID().uuidString
-        webViewDownloads[downloadId] = download
-
-        let webDownload = Download(
-            url: url,
-            destinationURL: downloadDirectory.appendingPathComponent(filename),
-            filename: filename
-        )
-        webDownload.webKitDownloadId = downloadId
-
-        downloads.append(webDownload)
-        updateActiveDownloadsCount()
-
-        logger.info("Started WKWebView download: \(filename)")
+        guard !webViewDownloads.values.contains(where: { $0 === download }) else { return }
+        let identifier = UUID().uuidString
+        webViewDownloads[identifier] = download
+        webViewContexts[identifier] = WebKitDownloadContext(isPrivate: isPrivate)
+        download.delegate = self
     }
 
-    /// Check if navigation should trigger download based on MIME type
-    func shouldDownloadResponse(_ response: URLResponse) -> Bool {
-        guard let mimeType = response.mimeType else { return false }
+    private func webDownloadIdentifier(_ download: WKDownload) -> String? {
+        webViewDownloads.first(where: { $0.value === download })?.key
+    }
 
-        let downloadableMimeTypes = [
-            "application/pdf",
-            "application/zip",
-            "application/x-zip-compressed",
-            "application/octet-stream",
-            "application/msword",
-            "application/vnd.ms-excel",
-            "application/vnd.ms-powerpoint",
-            "application/vnd.openxmlformats-officedocument",
-            "image/jpeg",
-            "image/png",
-            "image/gif",
-            "image/svg+xml",
-            "video/mp4",
-            "video/quicktime",
-            "audio/mpeg",
-            "audio/wav",
-        ]
-
-        return downloadableMimeTypes.contains { mimeType.hasPrefix($0) }
+    private func finishWebDownload(_ identifier: String) {
+        webViewDownloads.removeValue(forKey: identifier)?.delegate = nil
+        webViewContexts.removeValue(forKey: identifier)
     }
 
     /// Open file in default application
@@ -503,7 +513,8 @@ class DownloadManager: NSObject, ObservableObject {
             download.quarantineInfo = await quarantineManager.getQuarantineInfo(
                 for: download.destinationURL)
 
-            securityMonitor.logDownloadSecurityEvent(
+            logDownloadSecurityEvent(
+                isPrivate: download.isPrivate,
                 filename: download.filename,
                 sourceURL: download.url,
                 eventType: .quarantineRemoved,
@@ -531,7 +542,8 @@ class DownloadManager: NSObject, ObservableObject {
 
         download.securityScanTimestamp = Date()
 
-        securityMonitor.logDownloadSecurityEvent(
+        logDownloadSecurityEvent(
+            isPrivate: download.isPrivate,
             filename: download.filename,
             sourceURL: download.url,
             eventType: .securityScanCompleted,
@@ -578,11 +590,11 @@ class DownloadManager: NSObject, ObservableObject {
 
     private func loadSecuritySettings() {
         securityScanEnabled =
-            UserDefaults.standard.bool(forKey: "DownloadManager.SecurityScanEnabled") != false  // Default true
+            UserDefaults.standard.object(forKey: "DownloadManager.SecurityScanEnabled") as? Bool ?? true  // Default true
         showSecurityWarnings =
-            UserDefaults.standard.bool(forKey: "DownloadManager.ShowSecurityWarnings") != false  // Default true
+            UserDefaults.standard.object(forKey: "DownloadManager.ShowSecurityWarnings") as? Bool ?? true  // Default true
         autoQuarantineDownloads =
-            UserDefaults.standard.bool(forKey: "DownloadManager.AutoQuarantineDownloads") != false  // Default true
+            UserDefaults.standard.object(forKey: "DownloadManager.AutoQuarantineDownloads") as? Bool ?? true  // Default true
     }
 }
 
@@ -612,9 +624,10 @@ struct DownloadSecurityReport {
 class Download: ObservableObject, Identifiable {
     let id = UUID()
     let url: URL
-    let destinationURL: URL
-    let filename: String
+    @Published var destinationURL: URL
+    @Published var filename: String
     let startDate = Date()
+    let isPrivate: Bool
 
     @Published var status: Status = .downloading
     @Published var totalBytes: Int64 = 0
@@ -651,10 +664,11 @@ class Download: ObservableObject, Identifiable {
         case downloading, paused, completed, failed, cancelled
     }
 
-    init(url: URL, destinationURL: URL, filename: String) {
+    init(url: URL, destinationURL: URL, filename: String, isPrivate: Bool = false) {
         self.url = url
         self.destinationURL = destinationURL
         self.filename = filename
+        self.isPrivate = isPrivate
     }
 
     /// Get formatted file size
@@ -755,34 +769,74 @@ struct DownloadHistoryItem: Codable, Identifiable {
 
 // Download manager URLSession delegate
 extension DownloadManager: URLSessionDownloadDelegate {
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let error else { return }
+        Task { @MainActor in
+            guard let download = self.downloads.first(where: { $0.task == task }),
+                  download.status != .cancelled else { return }
+            download.status = (error as NSError).code == NSURLErrorCancelled ? .cancelled : .failed
+            self.updateActiveDownloadsCount()
+        }
+    }
+
     nonisolated func urlSession(
         _ session: URLSession, downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        // ENHANCED SECURITY: Comprehensive post-download validation
-        Task { @MainActor in
-            guard let download = self.downloads.first(where: { $0.task == downloadTask }) else {
-                return
+        // URLSession removes its temporary file when this callback returns.
+        // Take ownership synchronously before starting asynchronous validation.
+        let stagedFile: StagedDownloadFile
+        do {
+            stagedFile = try StagedDownloadFile(taking: location)
+        } catch {
+            Task { @MainActor in
+                self.downloads.first(where: { $0.task == downloadTask })?.status = .failed
+                self.updateActiveDownloadsCount()
             }
+            return
+        }
+        Task { @MainActor in
+            guard let download = self.downloads.first(where: { $0.task == downloadTask }) else { return }
+            await self.completeDownload(download, stagedFile: stagedFile, mimeType: downloadTask.response?.mimeType)
+        }
+    }
+
+    private func completeDownload(_ download: Download, stagedFile: StagedDownloadFile, mimeType: String?) async {
+        let location = stagedFile.url
+        defer { withExtendedLifetime(stagedFile) {} }
+        guard download.status != .cancelled else { return }
             do {
                 // Step 1: Calculate file hash for integrity verification
-                let fileData = try Data(contentsOf: location)
-                let hash = SHA256.hash(data: fileData)
-                download.fileHash = hash.compactMap { String(format: "%02x", $0) }.joined()
+                let (fileHash, fileSize) = try await Task.detached(priority: .utility) {
+                    let handle = try FileHandle(forReadingFrom: location)
+                    defer { try? handle.close() }
+                    var digest = SHA256()
+                    var count: Int64 = 0
+                    while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                        digest.update(data: chunk)
+                        count += Int64(chunk.count)
+                    }
+                    return (digest.finalize().map { String(format: "%02x", $0) }.joined(), count)
+                }.value
+                download.fileHash = fileHash
+                download.totalBytes = fileSize
+                download.downloadedBytes = fileSize
+                guard download.status != .cancelled else { return }
 
                 // Step 2: Perform malware scanning if enabled
                 if securityScanEnabled {
-                    securityMonitor.logDownloadSecurityEvent(
+                    logDownloadSecurityEvent(
+                        isPrivate: download.isPrivate,
                         filename: download.filename,
                         sourceURL: download.url,
                         eventType: .securityScanStarted,
                         severity: .info,
-                        details: ["scanType": "post_download", "fileSize": "\(fileData.count)"]
+                        details: ["scanType": "post_download", "fileSize": "\(fileSize)"]
                     )
 
                     download.malwareScanResult = await malwareScanner.scanFile(
                         at: location,
-                        fileSize: Int64(fileData.count),
+                        fileSize: fileSize,
                         fileHash: download.fileHash
                     )
 
@@ -791,7 +845,8 @@ extension DownloadManager: URLSessionDownloadDelegate {
                         logger.warning(
                             "🦠 Malware detected in downloaded file: \(download.filename)")
 
-                        securityMonitor.logDownloadSecurityEvent(
+                        logDownloadSecurityEvent(
+                            isPrivate: download.isPrivate,
                             filename: download.filename,
                             sourceURL: download.url,
                             eventType: .threatDetected,
@@ -813,7 +868,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
                                 // User wants to proceed despite threat
                                 Task {
                                     await self.proceedWithRiskyDownload(
-                                        download: download, location: location)
+                                        download: download, location: stagedFile.url)
                                 }
                             } onCancel: {
                                 // User cancelled - remove the download
@@ -824,21 +879,20 @@ extension DownloadManager: URLSessionDownloadDelegate {
                     }
                 }
 
-                // Step 3: Move file to final destination
-                try FileManager.default.moveItem(at: location, to: download.destinationURL)
-
-                // Step 4: Apply quarantine attributes if enabled
+                // Apply quarantine before exposing bytes at the final path.
                 if autoQuarantineDownloads {
                     let quarantineSuccess = await quarantineManager.quarantineDownloadedFile(
-                        at: download.destinationURL,
-                        sourceURL: download.url
+                        at: location,
+                        sourceURL: download.url,
+                        isPrivate: download.isPrivate
                     )
 
                     if quarantineSuccess {
                         download.quarantineInfo = await quarantineManager.getQuarantineInfo(
                             for: download.destinationURL)
 
-                        securityMonitor.logDownloadSecurityEvent(
+                        logDownloadSecurityEvent(
+                            isPrivate: download.isPrivate,
                             filename: download.filename,
                             sourceURL: download.url,
                             eventType: .quarantineApplied,
@@ -846,14 +900,26 @@ extension DownloadManager: URLSessionDownloadDelegate {
                             details: ["quarantineType": "web_download"]
                         )
                     } else {
-                        logger.warning("Failed to apply quarantine to: \(download.filename)")
+                        throw CocoaError(.fileWriteUnknown)
                     }
+                }
+
+                guard download.status != .cancelled else { return }
+                download.destinationURL = createUniqueFileURL(for: download.destinationURL, excluding: download.id)
+                download.filename = download.destinationURL.lastPathComponent
+                try FileManager.default.moveItem(at: location, to: download.destinationURL)
+                if autoQuarantineDownloads {
+                    download.quarantineInfo = await quarantineManager.getQuarantineInfo(for: download.destinationURL)
                 }
 
                 // Step 5: Mark download as completed and validated
                 download.status = .completed
                 download.completedDate = Date()
-                download.isSecurityValidated = true
+                if case .clean? = download.malwareScanResult {
+                    download.isSecurityValidated = true
+                } else {
+                    download.isSecurityValidated = false
+                }
                 download.securityScanTimestamp = Date()
                 updateActiveDownloadsCount()
 
@@ -865,25 +931,28 @@ extension DownloadManager: URLSessionDownloadDelegate {
                     filePath: download.destinationURL.path,
                     fileSize: download.totalBytes,
                     downloadDate: Date(),
-                    mimeType: downloadTask.response?.mimeType,
+                    mimeType: mimeType,
                     securityValidated: download.isSecurityValidated,
                     riskLevel: download.securityAnalysis?.riskLevel.displayName,
                     fileHash: download.fileHash
                 )
 
-                downloadHistory.insert(historyItem, at: 0)
+                if !download.isPrivate {
+                    downloadHistory.insert(historyItem, at: 0)
+                }
 
                 // Keep only last 100 downloads in history
                 if downloadHistory.count > 100 {
                     downloadHistory = Array(downloadHistory.prefix(100))
                 }
 
-                saveDownloadHistory()
+                if !download.isPrivate { saveDownloadHistory() }
 
                 // Log successful completion
-                logger.info("Secure download completed with full validation: \(download.filename)")
+                logger.info("Download completed")
 
-                securityMonitor.logDownloadSecurityEvent(
+                logDownloadSecurityEvent(
+                    isPrivate: download.isPrivate,
                     filename: download.filename,
                     sourceURL: download.url,
                     eventType: .securityScanCompleted,
@@ -897,12 +966,14 @@ extension DownloadManager: URLSessionDownloadDelegate {
                 )
 
             } catch {
+                guard download.status != .cancelled else { return }
                 download.status = .failed
                 updateActiveDownloadsCount()
 
                 logger.error("Failed to complete secure download: \(error.localizedDescription)")
 
-                securityMonitor.logDownloadSecurityEvent(
+                logDownloadSecurityEvent(
+                    isPrivate: download.isPrivate,
                     filename: download.filename,
                     sourceURL: download.url,
                     eventType: .securityViolation,
@@ -910,28 +981,27 @@ extension DownloadManager: URLSessionDownloadDelegate {
                     details: ["error": error.localizedDescription]
                 )
             }
-        }
     }
 
     @MainActor
     private func proceedWithRiskyDownload(download: Download, location: URL) async {
         do {
-            // User chose to proceed despite threat detection
-            try FileManager.default.moveItem(at: location, to: download.destinationURL)
-
             // Still apply quarantine even for risky files
             if autoQuarantineDownloads {
-                _ = await quarantineManager.quarantineDownloadedFile(
-                    at: download.destinationURL,
-                    sourceURL: download.url
-                )
+                guard await quarantineManager.quarantineDownloadedFile(at: location, sourceURL: download.url, isPrivate: download.isPrivate) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
             }
+
+            guard download.status != .cancelled else { return }
+            try FileManager.default.moveItem(at: location, to: download.destinationURL)
 
             download.status = .completed
             download.completedDate = Date()
             updateActiveDownloadsCount()
 
-            securityMonitor.logDownloadSecurityEvent(
+            logDownloadSecurityEvent(
+                isPrivate: download.isPrivate,
                 filename: download.filename,
                 sourceURL: download.url,
                 eventType: .userSecurityDecision,
@@ -972,4 +1042,196 @@ extension DownloadManager: URLSessionDownloadDelegate {
             }
         }
     }
+}
+
+extension DownloadManager: WKDownloadDelegate {
+    func download(
+        _ webDownload: WKDownload, decideDestinationUsing response: URLResponse,
+        suggestedFilename: String, completionHandler: @escaping (URL?) -> Void
+    ) {
+        guard let identifier = webDownloadIdentifier(webDownload),
+              let context = webViewContexts[identifier] else {
+            completionHandler(nil)
+            return
+        }
+        guard let sourceURL = response.url ?? webDownload.originalRequest?.url,
+              sourceURL.user == nil, sourceURL.password == nil else {
+            finishWebDownload(identifier)
+            completionHandler(nil)
+            return
+        }
+        let download = createDownload(from: sourceURL, suggestedFilename: suggestedFilename,
+            isPrivate: context.isPrivate)
+        download.webKitDownloadId = identifier
+        download.totalBytes = response.expectedContentLength
+        context.model = download
+        context.mimeType = response.mimeType
+        downloads.append(download)
+        updateActiveDownloadsCount()
+
+        Task { @MainActor in
+            let analysis = await fileSecurityValidator.analyzeFileSecurity(
+                url: sourceURL, suggestedFilename: download.filename,
+                mimeType: response.mimeType, expectedFileSize: response.expectedContentLength)
+            download.securityAnalysis = analysis
+            guard webViewContexts[identifier] === context, download.status != .cancelled else {
+                completionHandler(nil)
+                return
+            }
+            if ["http", "https"].contains(sourceURL.scheme?.lowercased() ?? ""),
+               case .unsafe = await SafeBrowsingManager.shared.checkURLSafety(
+                sourceURL, allowRemoteLookup: !context.isPrivate) {
+                download.status = .failed
+                finishWebDownload(identifier)
+                updateActiveDownloadsCount()
+                completionHandler(nil)
+                return
+            }
+            guard webViewContexts[identifier] === context, download.status != .cancelled else {
+                completionHandler(nil)
+                return
+            }
+            let blocked = fileSecurityValidator.shouldBlockDownload(analysis)
+            if blocked || (analysis.requiresUserConfirmation && showSecurityWarnings) {
+                let approved = await confirmWebDownload(
+                    download, analysis: analysis, blocked: blocked, window: webDownload.webView?.window)
+                guard approved else {
+                    if download.status != .cancelled { download.status = blocked ? .failed : .cancelled }
+                    finishWebDownload(identifier)
+                    updateActiveDownloadsCount()
+                    completionHandler(nil)
+                    return
+                }
+            }
+            guard webViewContexts[identifier] === context, download.status != .cancelled else {
+                completionHandler(nil)
+                return
+            }
+            do {
+                let stagedFile = try StagedDownloadFile(filename: download.filename)
+                context.stagedFile = stagedFile
+                let progress = webDownload.progress
+                context.observations = [
+                    progress.observe(\.completedUnitCount, options: [.initial, .new]) { [weak self] progress, _ in
+                        let completed = progress.completedUnitCount
+                        let total = progress.totalUnitCount
+                        Task { @MainActor in
+                            guard let self, self.webViewContexts[identifier] != nil,
+                                  download.status == .downloading else { return }
+                            download.downloadedBytes = max(0, completed)
+                            download.totalBytes = total
+                            let elapsed = Date().timeIntervalSince(download.startDate)
+                            download.speed = elapsed > 0 ? Double(max(0, completed)) / elapsed : 0
+                        }
+                    }
+                ]
+                completionHandler(stagedFile.url)
+            } catch {
+                download.status = .failed
+                finishWebDownload(identifier)
+                updateActiveDownloadsCount()
+                completionHandler(nil)
+            }
+        }
+    }
+
+    func downloadDidFinish(_ webDownload: WKDownload) {
+        guard let identifier = webDownloadIdentifier(webDownload),
+              let context = webViewContexts[identifier] else { return }
+        guard let download = context.model, let stagedFile = context.stagedFile else {
+            context.model?.status = .failed
+            finishWebDownload(identifier)
+            updateActiveDownloadsCount()
+            return
+        }
+        finishWebDownload(identifier)
+        Task { @MainActor in
+            await completeDownload(download, stagedFile: stagedFile, mimeType: context.mimeType)
+        }
+    }
+
+    func download(_ webDownload: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        guard let identifier = webDownloadIdentifier(webDownload) else { return }
+        if let download = webViewContexts[identifier]?.model, download.status != .cancelled {
+            download.status = (error as NSError).code == NSURLErrorCancelled ? .cancelled : .failed
+        }
+        finishWebDownload(identifier)
+        updateActiveDownloadsCount()
+    }
+
+    func download(
+        _ download: WKDownload, willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest, decisionHandler: @escaping (WKDownload.RedirectPolicy) -> Void
+    ) {
+        guard let url = request.url, ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil else {
+            if let identifier = webDownloadIdentifier(download) {
+                webViewContexts[identifier]?.model?.status = .failed
+                finishWebDownload(identifier)
+                updateActiveDownloadsCount()
+            }
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+
+    private func confirmWebDownload(
+        _ download: Download, analysis: FileSecurityValidator.FileSecurityAnalysis,
+        blocked: Bool, window: NSWindow?
+    ) async -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = blocked ? "Download blocked" : "Download this file?"
+        alert.informativeText = download.filename + "\n\n" + analysis.riskReasons.joined(separator: "\n")
+        alert.addButton(withTitle: blocked ? "OK" : "Cancel")
+        if !blocked { alert.addButton(withTitle: "Download") }
+        let response: NSApplication.ModalResponse
+        if let window {
+            response = await withCheckedContinuation { continuation in
+                alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+            }
+        } else {
+            response = alert.runModal()
+        }
+        return !blocked && response == .alertSecondButtonReturn
+    }
+}
+
+enum DownloadFileDestination {
+    static func uniqueURL(for url: URL, reservedURLs: [URL] = []) -> URL {
+        let directory = url.deletingLastPathComponent()
+        let safeURL = directory.appendingPathComponent(BrowserSecurityPolicy.downloadFilename(url.lastPathComponent))
+        let reserved = Set(reservedURLs.map(\.standardizedFileURL))
+        var candidate = safeURL
+        var counter = 1
+        while FileManager.default.fileExists(atPath: candidate.path) || reserved.contains(candidate.standardizedFileURL) {
+            let stem = safeURL.deletingPathExtension().lastPathComponent
+            let suffix = safeURL.pathExtension.isEmpty ? "" : "." + safeURL.pathExtension
+            candidate = directory.appendingPathComponent("\(stem) (\(counter))\(suffix)")
+            counter += 1
+        }
+        return candidate
+    }
+}
+
+
+/// Owns a download's temporary bytes until validation or a user decision finishes.
+final class StagedDownloadFile: @unchecked Sendable {
+    let url: URL
+    private let directory: URL
+
+    init(filename: String = "download") throws {
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        url = directory.appendingPathComponent(BrowserSecurityPolicy.downloadFilename(filename))
+    }
+
+    convenience init(taking source: URL) throws {
+        try self.init(filename: source.lastPathComponent)
+        try FileManager.default.moveItem(at: source, to: url)
+    }
+
+    deinit { try? FileManager.default.removeItem(at: directory) }
 }

@@ -186,7 +186,9 @@ class PrivacyManager: ObservableObject {
 
             // Decrypt
             let decrypted = try await decryptConversationData(envelope.toEncryptedData())
-            let conv = try JSONDecoder().decode(ConversationExportCodable.self, from: decrypted)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let conv = try decoder.decode(ConversationExportCodable.self, from: decrypted)
             return conv.toConversationExport()
         } catch {
             throw PrivacyError.retrievalError(error.localizedDescription)

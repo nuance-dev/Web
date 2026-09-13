@@ -148,7 +148,8 @@ class QuarantineManager: ObservableObject {
     func quarantineDownloadedFile(
         at fileURL: URL,
         sourceURL: URL,
-        referrerURL: URL? = nil
+        referrerURL: URL? = nil,
+        isPrivate: Bool = false
     ) async -> Bool {
         guard isEnabled && autoQuarantineDownloads else {
             logger.debug("Quarantine disabled, skipping file: \(fileURL.lastPathComponent)")
@@ -158,29 +159,8 @@ class QuarantineManager: ObservableObject {
         logger.info("Applying quarantine to downloaded file: \(fileURL.lastPathComponent)")
 
         do {
-            // Create quarantine properties dictionary
-            var quarantineDict: [String: Any] = [:]
-
-            // Set quarantine type
-            quarantineDict[kLSQuarantineTypeKey] = QuarantineType.webDownload.rawValue
-
-            // Set agent information
-            quarantineDict[kLSQuarantineAgentNameKey] = "Web Browser"
-            quarantineDict[kLSQuarantineAgentBundleIdentifierKey] =
-                Bundle.main.bundleIdentifier ?? "com.example.Web"
-
-            // Set timestamp
-            quarantineDict[kLSQuarantineTimeStampKey] = Date()
-
-            // Set source URLs
-            quarantineDict[kLSQuarantineDataURLKey] = sourceURL.absoluteString
-            if let referrer = referrerURL {
-                quarantineDict[kLSQuarantineOriginURLKey] = referrer.absoluteString
-            }
-
-            // Apply quarantine attributes using extended attributes
-            let result = try setQuarantineExtendedAttributes(
-                fileURL: fileURL, quarantineDict: quarantineDict)
+            let result = try QuarantineFileMetadata.apply(
+                to: fileURL, sourceURL: sourceURL, referrerURL: referrerURL, isPrivate: isPrivate)
 
             if result {
                 await incrementFilesQuarantined()
@@ -190,8 +170,9 @@ class QuarantineManager: ObservableObject {
                 logSecurityEvent(
                     event: "file_quarantined",
                     fileURL: fileURL,
-                    sourceURL: sourceURL,
-                    details: ["agent": "Web Browser", "type": "web_download"]
+                    sourceURL: isPrivate ? nil : sourceURL,
+                    details: ["agent": "Web Browser", "type": "web_download"],
+                    isPrivate: isPrivate
                 )
 
                 return true
@@ -345,31 +326,6 @@ class QuarantineManager: ObservableObject {
 
     // MARK: - Private Implementation
 
-    private func setQuarantineExtendedAttributes(fileURL: URL, quarantineDict: [String: Any]) throws
-        -> Bool
-    {
-        // Convert quarantine dictionary to property list data
-        let quarantineData = try PropertyListSerialization.data(
-            fromPropertyList: quarantineDict,
-            format: .binary,
-            options: 0
-        )
-
-        // Set extended attribute
-        let result = quarantineData.withUnsafeBytes { bytes in
-            setxattr(
-                fileURL.path,
-                "com.apple.quarantine",
-                bytes.bindMemory(to: UInt8.self).baseAddress,
-                quarantineData.count,
-                0,
-                0
-            )
-        }
-
-        return result == 0
-    }
-
     private func removeQuarantineExtendedAttributes(fileURL: URL) throws -> Bool {
         let result = removexattr(fileURL.path, "com.apple.quarantine", 0)
         return result == 0 || errno == ENOATTR  // Success or attribute doesn't exist
@@ -383,6 +339,7 @@ class QuarantineManager: ObservableObject {
     }
 
     private func parseSourceURL(from properties: [String: Any]) -> URL? {
+        if let url = properties[kLSQuarantineDataURLKey] as? URL { return url }
         if let urlString = properties[kLSQuarantineDataURLKey] as? String {
             return URL(string: urlString)
         }
@@ -466,13 +423,14 @@ class QuarantineManager: ObservableObject {
         event: String,
         fileURL: URL,
         sourceURL: URL?,
-        details: [String: Any]
+        details: [String: Any],
+        isPrivate: Bool = false
     ) {
         var logDetails = details
-        logDetails["filename"] = fileURL.lastPathComponent
-        logDetails["filePath"] = fileURL.path
-        if let source = sourceURL {
-            logDetails["sourceURL"] = source.absoluteString
+        if !isPrivate {
+            logDetails["filename"] = fileURL.lastPathComponent
+            logDetails["filePath"] = fileURL.path
+            if let source = sourceURL { logDetails["sourceURL"] = source.absoluteString }
         }
         logDetails["timestamp"] = Date().timeIntervalSince1970
 
@@ -559,4 +517,32 @@ class QuarantineManager: ObservableObject {
 
 extension Notification.Name {
     static let quarantineSecurityEvent = Notification.Name("quarantineSecurityEvent")
+}
+
+
+/// Use Launch Services' native quarantine encoding. Private files retain protection
+/// without carrying a source URL in quarantine or Spotlight metadata.
+enum QuarantineFileMetadata {
+    static func apply(to fileURL: URL, sourceURL: URL, referrerURL: URL? = nil, isPrivate: Bool) throws -> Bool {
+        if isPrivate {
+            for attribute in ["com.apple.quarantine", "com.apple.metadata:kMDItemWhereFroms"] {
+                let result = removexattr(fileURL.path, attribute, 0)
+                if result != 0 && errno != ENOATTR { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            }
+        }
+        var properties: [String: Any] = [
+            "LSQuarantineType": "LSQuarantineTypeWebDownload",
+            "LSQuarantineAgentName": "Web Browser",
+            "LSQuarantineAgentBundleIdentifier": Bundle.main.bundleIdentifier ?? "com.example.Web",
+            "LSQuarantineTimeStamp": Date()
+        ]
+        if !isPrivate {
+            properties["LSQuarantineDataURL"] = sourceURL
+            if let referrerURL { properties["LSQuarantineOriginURL"] = referrerURL }
+        }
+        try (fileURL as NSURL).setResourceValue(properties, forKey: .quarantinePropertiesKey)
+        let freshURL = URL(fileURLWithPath: fileURL.path)
+        let values = try freshURL.resourceValues(forKeys: [.quarantinePropertiesKey])
+        return values.quarantineProperties?.isEmpty == false
+    }
 }

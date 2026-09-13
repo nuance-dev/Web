@@ -38,6 +38,12 @@ class SafeBrowsingManager: ObservableObject {
     // MARK: - State Management
 
     @Published var isEnabled: Bool = true
+    @Published var allowRemoteLookups: Bool = UserDefaults.standard.bool(forKey: "safeBrowsingAllowRemoteLookups") {
+        didSet {
+            UserDefaults.standard.set(allowRemoteLookups, forKey: "safeBrowsingAllowRemoteLookups")
+            if allowRemoteLookups { isEnabled = true }
+        }
+    }
     @Published var isOnline: Bool = true
     @Published var lastUpdateDate: Date?
     @Published var totalThreatsBlocked: Int = 0
@@ -216,15 +222,15 @@ class SafeBrowsingManager: ObservableObject {
      * - Parameter url: The URL to check for threats
      * - Returns: URLSafetyResult indicating safety status and threat details
      */
-    func checkURLSafety(_ url: URL) async -> URLSafetyResult {
+    func checkURLSafety(_ url: URL, allowRemoteLookup: Bool = true) async -> URLSafetyResult {
         // Sanitize and normalize URL
         guard let normalizedURL = normalizeURL(url) else {
-            logger.warning("Failed to normalize URL: \(url.absoluteString)")
+            logger.warning("Could not normalize URL for reputation check")
             return .safe
         }
 
         let urlString = normalizedURL.absoluteString
-        if AppLog.isVerboseEnabled { AppLog.debug("Checking URL safety: \(urlString)") }
+
 
         // Check if Safe Browsing is disabled
         guard isEnabled else {
@@ -234,7 +240,7 @@ class SafeBrowsingManager: ObservableObject {
 
         // Check user overrides (false positive handling)
         if userOverrides.contains(urlString) {
-            logger.info("URL allowed by user override: \(urlString)")
+            logger.info("URL allowed by user override")
             return .safe
         }
 
@@ -250,7 +256,8 @@ class SafeBrowsingManager: ObservableObject {
             }
         }
 
-        // Query Google Safe Browsing API if online and circuit breaker allows
+        // The lookup endpoint sends full URLs, so it requires explicit opt-in.
+        guard allowRemoteLookup, allowRemoteLookups else { return .unknown }
         if isOnline && circuitBreaker.canMakeRequest {
             return await queryGoogleAPI(for: normalizedURL)
         } else {
@@ -337,7 +344,7 @@ class SafeBrowsingManager: ObservableObject {
                 return .unknown
             }
 
-            // Create privacy-preserving request (hash-based lookup)
+            // This endpoint sends the URL, not a hash prefix.
             let request = try createLookupRequest(for: url, apiKey: apiKey)
 
             // Execute API request
@@ -381,7 +388,7 @@ class SafeBrowsingManager: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(clientID, forHTTPHeaderField: "User-Agent")
 
-        // Create request body with threat types and URL hashes
+        // Create the URL lookup request.
         let requestBody: [String: Any] = [
             "client": [
                 "clientId": clientID,
@@ -526,7 +533,7 @@ class SafeBrowsingManager: ObservableObject {
     }
 
     private func loadConfiguration() {
-        isEnabled = UserDefaults.standard.bool(forKey: "SafeBrowsing.Enabled") != false  // Default to true
+        isEnabled = UserDefaults.standard.object(forKey: "SafeBrowsing.Enabled") as? Bool ?? true  // Default to true
         totalThreatsBlocked = UserDefaults.standard.integer(forKey: "SafeBrowsing.ThreatsBlocked")
         lastUpdateDate = UserDefaults.standard.object(forKey: "SafeBrowsing.LastUpdate") as? Date
     }

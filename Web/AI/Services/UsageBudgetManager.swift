@@ -33,7 +33,7 @@ final class UsageBudgetManager: ObservableObject {
     /// Returns whether action is allowed under budget and emits alerts when exceeded.
     func checkAndRecord(cost deltaUSD: Double, providerId: String, date now: Date = Date()) -> Bool
     {
-        guard deltaUSD > 0, let budget = providerBudgets[providerId] else { return true }
+        guard deltaUSD >= 0, let budget = providerBudgets[providerId] else { return true }
 
         // Pull usage totals for today/month
         let cal = Calendar.current
@@ -42,19 +42,19 @@ final class UsageBudgetManager: ObservableObject {
             cal.date(from: cal.dateComponents([.year, .month], from: now)) ?? startOfDay
 
         let usage = AIUsageStore.shared
-        let dayTotals = usage.aggregate(in: startOfDay...now).filter { $0.providerId == providerId }
-        let monthTotals = usage.aggregate(in: startOfMonth...now).filter {
+        let dayTotals = usage.aggregate(byProviderOnly: true, in: startOfDay...now).filter { $0.providerId == providerId }
+        let monthTotals = usage.aggregate(byProviderOnly: true, in: startOfMonth...now).filter {
             $0.providerId == providerId
         }
 
         let dayCost = (dayTotals.first?.estimatedCostUSD ?? 0) + deltaUSD
         let monthCost = (monthTotals.first?.estimatedCostUSD ?? 0) + deltaUSD
 
-        if let d = budget.dailyUSD, dayCost > d {
+        if let d = budget.dailyUSD, dayCost >= d {
             lastAlert = (providerId, "Daily budget exceeded for \(providerId).")
             return !budget.blockOnExceed
         }
-        if let m = budget.monthlyUSD, monthCost > m {
+        if let m = budget.monthlyUSD, monthCost >= m {
             lastAlert = (providerId, "Monthly budget exceeded for \(providerId).")
             return !budget.blockOnExceed
         }

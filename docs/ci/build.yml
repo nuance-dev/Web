@@ -1,0 +1,25 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Test
+        run: >-
+          xcodebuild -project Web.xcodeproj -scheme Web
+          -configuration Debug -destination 'platform=macOS,arch=arm64'
+          -derivedDataPath build -only-testing:WebTests
+          CODE_SIGNING_ALLOWED=NO test

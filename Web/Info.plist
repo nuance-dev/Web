@@ -30,7 +30,7 @@
 	
 	<!-- macOS Requirements -->
 	<key>LSMinimumSystemVersion</key>
-	<string>14.6</string>
+	<string>26.5</string>
 	<key>LSRequiresNativeExecution</key>
 	<true/>
 	
@@ -38,73 +38,13 @@
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	
-	<!-- 
-	===========================================================================
-	CRITICAL SECURITY CONFIGURATION: App Transport Security (ATS)
-	===========================================================================
-	
-	SECURITY RATIONALE:
-	This configuration implements defense-in-depth security for a WebKit-based browser:
-	
-	1. NSAllowsArbitraryLoadsInWebContent = true
-	   - Allows WebKit to load HTTP content (required for browser functionality)
-	   - Only affects WKWebView/UIWebView traffic, NOT app-level networking
-	   - App-level networking remains protected by ATS (HTTPS/TLS 1.2+ required)
-	   - This is Apple's recommended approach for browsers per NSAllowsArbitraryLoadsInWebContent documentation
-	
-	2. NSAllowsArbitraryLoadsForMedia = true
-	   - Allows loading of HTTP media resources (images, videos, audio)
-	   - Prevents broken media experience on HTTP sites
-	   - Also scoped to WebView content only
-	
-	3. NSAllowsArbitraryLoads is NOT set (defaults to false)
-	   - Maintains ATS protection for all app-level network requests
-	   - Requires TLS 1.2+ for app's own API calls, updates, etc.
-	   - Provides protection against MITM attacks on app infrastructure
-	
-	4. TLS Requirements (enforced by default ATS):
-	   - TLS 1.2+ required for all non-WebView connections
-	   - Forward secrecy cipher suites required
-	   - Certificate validation enforced
-	   - HSTS respected
-	
-	APP STORE COMPLIANCE:
-	- This configuration is App Store compliant for browser applications
-	- Uses targeted exceptions rather than blanket disabling
-	- Follows Apple's recommended practice for WebKit-based apps
-	- May require justification during App Review (standard for browsers)
-	
-	ALTERNATIVE APPROACHES REJECTED:
-	- NSAllowsArbitraryLoads = true: Too broad, disables ALL ATS protection
-	- Domain-specific exceptions: Impractical for general-purpose browser
-	- No ATS configuration: Current state, exposes users to MITM attacks
-	-->
+	<!-- HTTP browsing is permitted only in WebKit. Native networking keeps ATS defaults. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Allow HTTP content in WebView for browser functionality -->
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
-		
-		<!-- Allow HTTP media resources to prevent broken content -->
-		<key>NSAllowsArbitraryLoadsForMedia</key>
-		<true/>
-		
-		<!-- Optional: Example of domain-specific exceptions if needed
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>localhost</key>
-			<dict>
-				<key>NSIncludesSubdomains</key>
-				<true/>
-				<key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSTemporaryExceptionMinimumTLSVersion</key>
-				<string>TLSv1.0</string>
-			</dict>
-		</dict>
-		-->
 	</dict>
-	
+
 	<!-- 
 	===========================================================================
 	PRIVACY AND SECURITY FEATURES

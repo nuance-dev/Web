@@ -10,6 +10,7 @@ class AdBlockService: NSObject, ObservableObject {
         didSet {
             if isEnabled != oldValue {
                 updateContentBlockingRules()
+                saveSettings()
             }
         }
     }

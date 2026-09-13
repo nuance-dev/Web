@@ -12,18 +12,15 @@ struct FaviconView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: size, height: size)
-            } else if tab.url == nil || tab.title == "New Tab" {
-                // Show Web logo for new tabs
-                WebLogo()
-                    .frame(width: size, height: size)
             } else {
-                // Default globe icon while loading or if no favicon for existing pages
+                // Draw at the display scale instead of shrinking the app's dock icon.
                 Image(systemName: "globe")
-                    .font(.system(size: size * 0.7, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: size * 0.85, weight: .regular))
+                    .foregroundStyle(.secondary)
                     .frame(width: size, height: size)
             }
         }
+        .accessibilityHidden(true)
     }
 }
 

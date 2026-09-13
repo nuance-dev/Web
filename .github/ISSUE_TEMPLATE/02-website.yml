@@ -1,0 +1,57 @@
+name: Website compatibility
+description: A page, login, download, upload, PDF or video fails in Web.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A small reproducible example helps us separate browser bugs from site behavior.
+        Keep account details and private links out of this public report. Report vulnerabilities [privately](https://github.com/nuance-dev/Web/security/advisories/new).
+  - type: input
+    id: website
+    attributes:
+      label: Public page or site
+      description: Optional. Use a public example or just the site name. Remove sign-in codes and private query parameters.
+      placeholder: https://example.com
+  - type: input
+    id: environment
+    attributes:
+      label: Web version, macOS and chip
+      description: Web → About Web shows the app version. A source commit also works.
+      placeholder: Web version/build, macOS 26.5, Apple M2
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it happen?
+      multiple: true
+      options:
+        - Normal tab
+        - Private tab
+        - Glance
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe the action that fails. Mention whether it requires signing in, without sharing an account.
+      placeholder: |
+        1. Open…
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual result
+      description: Add a redacted screenshot or short recording if it helps.
+    validations:
+      required: true
+  - type: dropdown
+    id: safari
+    attributes:
+      label: Same steps in Safari on this Mac
+      description: Optional. You do not need to repeat a download, payment or other consequential action to report a bug.
+      options:
+        - Not checked
+        - Works in Safari
+        - Also fails in Safari

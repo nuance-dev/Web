@@ -44,8 +44,8 @@ class WebKitManager: ObservableObject {
         }
         
         // Performance optimizations
-        configuration.allowsAirPlayForMediaPlayback = true
-        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.allowsAirPlayForMediaPlayback = !isIncognito
+        configuration.mediaTypesRequiringUserActionForPlayback = (UserDefaults.standard.object(forKey: "blockAutoplay") as? Bool ?? true) ? .all : []
         
         // OAUTH FIX: Enhanced cookie and session handling
         setupEnhancedCookieHandling(for: configuration, isOAuthFlow: isOAuthFlow)
@@ -94,7 +94,7 @@ class WebKitManager: ObservableObject {
         
         // Enable developer tools and inspection
         if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+            webView.isInspectable = UserDefaults.standard.bool(forKey: "enableDeveloperTools")
         }
         
         // Performance settings
@@ -117,6 +117,14 @@ class WebKitManager: ObservableObject {
         }
     }
     
+    /// End the private session without touching regular browsing data.
+    func resetIncognitoDataStore() {
+        let oldStore = incognitoDataStore
+        incognitoDataStore = WKWebsiteDataStore.nonPersistent()
+        oldStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+            modifiedSince: .distantPast) {}
+    }
+
     /// Gets current memory usage information for the shared process pool
     /// Note: This is an approximation as WebKit doesn't expose detailed memory metrics
     func getEstimatedMemoryUsage() -> Int64 {
@@ -202,7 +210,7 @@ class WebKitManager: ObservableObject {
         
         // Enable developer tools for OAuth debugging
         if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+            webView.isInspectable = UserDefaults.standard.bool(forKey: "enableDeveloperTools")
         }
         
         // Performance settings optimized for OAuth flows

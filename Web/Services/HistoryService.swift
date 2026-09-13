@@ -261,7 +261,7 @@ class HistoryService: ObservableObject {
     }
     
     /// Clear all history with immediate UI feedback
-    func clearAllHistory() {
+    func clearAllHistory(completion: ((Bool) -> Void)? = nil) {
         // Immediate UI update - clear published array first
         recentHistory.removeAll()
         
@@ -286,12 +286,14 @@ class HistoryService: ObservableObject {
                 // Reload to ensure consistency
                 await MainActor.run {
                     loadRecentHistory()
+                    completion?(true)
                 }
             } catch {
                 logger.error("Failed to clear history: \(error.localizedDescription)")
                 // Revert UI change on error
                 await MainActor.run {
                     loadRecentHistory()
+                    completion?(false)
                 }
             }
         }

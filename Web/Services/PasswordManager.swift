@@ -14,7 +14,6 @@ class PasswordManager: NSObject, ObservableObject {
     
     private let serviceName = "com.web.browser.passwords"
     private var encryptionKey: SymmetricKey?
-    private let context = LAContext()
     
     struct SavedPassword: Identifiable, Codable {
         let id: UUID
@@ -62,36 +61,45 @@ class PasswordManager: NSObject, ObservableObject {
     }
     
     // MARK: - Encryption Key Management
-    private func getOrCreateEncryptionKey() -> SymmetricKey {
-        let keyQuery: [String: Any] = [
+    private enum KeyStorageError: Error {
+        case unavailable(OSStatus)
+        case invalidKey
+    }
+
+    private func getOrCreateEncryptionKey() throws -> SymmetricKey {
+        let identity: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "\(serviceName).encryptionKey",
-            kSecAttrAccount as String: "masterKey",
-            kSecReturnData as String: true
+            kSecAttrAccount as String: "masterKey"
         ]
-        
+        var query = identity
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        let status = SecItemCopyMatching(keyQuery as CFDictionary, &result)
-        
-        if status == errSecSuccess, let keyData = result as? Data {
-            return SymmetricKey(data: keyData)
-        } else {
-            let newKey = SymmetricKey(size: .bits256)
-            let keyData = newKey.withUnsafeBytes { Data($0) }
-            
-            let addQuery: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: "\(serviceName).encryptionKey",
-                kSecAttrAccount as String: "masterKey",
-                kSecValueData as String: keyData,
-                kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            ]
-            
-            SecItemAdd(addQuery as CFDictionary, nil)
-            return newKey
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess {
+            guard let data = result as? Data, data.count == 32 else { throw KeyStorageError.invalidKey }
+            return SymmetricKey(data: data)
         }
+        // A locked or denied keychain must never replace the existing encryption key.
+        guard status == errSecItemNotFound else { throw KeyStorageError.unavailable(status) }
+        let key = SymmetricKey(size: .bits256)
+        var add = identity
+        add[kSecValueData as String] = key.withUnsafeBytes { Data($0) }
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        if addStatus == errSecDuplicateItem {
+            var existing: AnyObject?
+            let readStatus = SecItemCopyMatching(query as CFDictionary, &existing)
+            guard readStatus == errSecSuccess, let data = existing as? Data, data.count == 32 else {
+                throw KeyStorageError.unavailable(readStatus)
+            }
+            return SymmetricKey(data: data)
+        }
+        guard addStatus == errSecSuccess else { throw KeyStorageError.unavailable(addStatus) }
+        return key
     }
-    
+
     // MARK: - Password Storage and Retrieval
     func savePassword(website: String, username: String, password: String, notes: String? = nil) async -> Bool {
         guard await authenticateUser() else { return false }
@@ -123,15 +131,22 @@ class PasswordManager: NSObject, ObservableObject {
                 kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             ]
             
-            SecItemDelete(query as CFDictionary)
-            
-            let status = SecItemAdd(query as CFDictionary, nil)
+            let identity: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: serviceName,
+                kSecAttrAccount as String: account
+            ]
+            // Update in place so a failed write cannot delete the previous credential.
+            var status = SecItemUpdate(identity as CFDictionary,
+                [kSecValueData as String: passwordData] as CFDictionary)
+            if status == errSecItemNotFound { status = SecItemAdd(query as CFDictionary, nil) }
             
             if status == errSecSuccess {
                 await MainActor.run {
                     savedPasswords.removeAll { $0.website == website && $0.username == username }
                     savedPasswords.append(savedPassword)
                     savedPasswords.sort { $0.lastUsed > $1.lastUsed }
+                    savePasswordMetadata()
                 }
                 return true
             }
@@ -190,6 +205,7 @@ class PasswordManager: NSObject, ObservableObject {
         if status == errSecSuccess {
             await MainActor.run {
                 savedPasswords.removeAll { $0.website == website && $0.username == username }
+                savePasswordMetadata()
             }
             return true
         }
@@ -291,23 +307,20 @@ class PasswordManager: NSObject, ObservableObject {
         
         let autofillScript = generateAutofillScript()
         
-        // SECURITY: Use CSP-protected script injection for autofill
-        if let secureScript = CSPManager.shared.secureScriptInjection(
-            script: autofillScript,
-            type: .autofill,
-            webView: webView
-        ) {
-            webView.configuration.userContentController.addUserScript(secureScript)
-        }
-        
-        webView.configuration.userContentController.add(self, name: "autofillHandler")
+        // Keep credential messaging outside the webpage's JavaScript namespace.
+        let controller = webView.configuration.userContentController
+        controller.addUserScript(WKUserScript(source: autofillScript,
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: .defaultClient))
+        controller.removeScriptMessageHandler(forName: "autofillHandler", contentWorld: .defaultClient)
+        controller.add(self, contentWorld: .defaultClient, name: "autofillHandler")
     }
-    
+
     private func generateAutofillScript() -> String {
         return """
         (function() {
             'use strict';
             
+            if (window.location.protocol !== 'https:') return;
             let formObserver;
             let lastFormCheck = 0;
             const FORM_CHECK_INTERVAL = 10000; // Increased from 3s to 10s to prevent Google CPU issues
@@ -359,6 +372,7 @@ class PasswordManager: NSObject, ObservableObject {
                 button.addEventListener('mouseleave', () => button.style.opacity = '0.7');
                 
                 button.addEventListener('click', (e) => {
+                    if (!e.isTrusted) return;
                     e.preventDefault();
                     if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.autofillHandler) {
                         window.webkit.messageHandlers.autofillHandler.postMessage({
@@ -379,26 +393,9 @@ class PasswordManager: NSObject, ObservableObject {
                 container.appendChild(button);
             }
             
-            function handleFormSubmission() {
-                const loginForms = findLoginForms();
-                
-                loginForms.forEach(loginForm => {
-                    loginForm.form.addEventListener('submit', () => {
-                        const username = loginForm.emailInput.value;
-                        const password = loginForm.passwordInput.value;
-                        
-                        if (username && password && window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.autofillHandler) {
-                            window.webkit.messageHandlers.autofillHandler.postMessage({
-                                type: 'saveCredentials',
-                                website: loginForm.website,
-                                username: username,
-                                password: password
-                            });
-                        }
-                    });
-                });
-            }
-            
+            // Password capture on submit is deliberately absent. Page scripts must
+            // never trigger native credential writes or biometric prompts.
+
             function checkForForms() {
                 const now = Date.now();
                 if (now - lastFormCheck < FORM_CHECK_INTERVAL) return;
@@ -418,9 +415,6 @@ class PasswordManager: NSObject, ObservableObject {
                     addAutofillButtons(loginForm);
                 });
                 
-                if (loginForms.length > 0) {
-                    handleFormSubmission();
-                }
             }
             
             if (document.readyState === 'loading') {
@@ -480,6 +474,7 @@ class PasswordManager: NSObject, ObservableObject {
     private func authenticateUser() async -> Bool {
         guard requireBiometricAuth else { return true }
         
+        let context = LAContext()
         return await withCheckedContinuation { continuation in
             context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Authenticate to access saved passwords") { success, error in
                 continuation.resume(returning: success)
@@ -491,7 +486,7 @@ class PasswordManager: NSObject, ObservableObject {
     private func encryptPassword(_ password: String) throws -> Data {
         // Lazy initialization of encryption key when first needed
         if encryptionKey == nil {
-            encryptionKey = getOrCreateEncryptionKey()
+            encryptionKey = try getOrCreateEncryptionKey()
         }
         
         let passwordData = Data(password.utf8)
@@ -502,7 +497,7 @@ class PasswordManager: NSObject, ObservableObject {
     private func decryptPassword(_ encryptedData: Data) throws -> String {
         // Lazy initialization of encryption key when first needed
         if encryptionKey == nil {
-            encryptionKey = getOrCreateEncryptionKey()
+            encryptionKey = try getOrCreateEncryptionKey()
         }
         
         let sealedBox = try AES.GCM.SealedBox(combined: encryptedData)
@@ -511,19 +506,45 @@ class PasswordManager: NSObject, ObservableObject {
     }
     
     // MARK: - Data Management
+    private var metadataIdentity: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "\(serviceName).metadata",
+         kSecAttrAccount as String: "index"]
+    }
+
     private func loadSavedPasswords() {
-        if let data = UserDefaults.standard.data(forKey: "passwordMetadata"),
+        var query = metadataIdentity
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess, let data = result as? Data,
            let metadata = try? JSONDecoder().decode([SavedPassword].self, from: data) {
             savedPasswords = metadata.sorted { $0.lastUsed > $1.lastUsed }
+        } else if status == errSecItemNotFound,
+                  let data = UserDefaults.standard.data(forKey: "passwordMetadata"),
+                  let metadata = try? JSONDecoder().decode([SavedPassword].self, from: data) {
+            savedPasswords = metadata.sorted { $0.lastUsed > $1.lastUsed }
+            savePasswordMetadata()
         }
     }
-    
+
     private func savePasswordMetadata() {
-        if let data = try? JSONEncoder().encode(savedPasswords) {
-            UserDefaults.standard.set(data, forKey: "passwordMetadata")
+        guard let data = try? JSONEncoder().encode(savedPasswords) else { return }
+        var status = SecItemUpdate(metadataIdentity as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var query = metadataIdentity
+            query[kSecValueData as String] = data
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            status = SecItemAdd(query as CFDictionary, nil)
+        }
+        if status == errSecSuccess {
+            UserDefaults.standard.removeObject(forKey: "passwordMetadata")
         }
     }
-    
+
     private func loadSettings() {
         if let data = UserDefaults.standard.data(forKey: "passwordManagerSettings"),
            let settings = try? JSONDecoder().decode(PasswordManagerSettings.self, from: data) {
@@ -576,52 +597,32 @@ class PasswordManager: NSObject, ObservableObject {
 // MARK: - Script Message Handler (CSP-Protected)
 extension PasswordManager: WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        let validationResult = CSPManager.shared.validateMessageInput(message, expectedHandler: "autofillHandler")
-        
-        switch validationResult {
-        case .valid(let sanitizedBody):
-            guard let type = sanitizedBody["type"] as? String else { return }
-            
-            switch type {
-            case "requestCredentials":
-                if let website = sanitizedBody["website"] as? String {
-                    showAutofillSuggestions(for: website, in: message.webView)
-                }
-                
-            case "saveCredentials":
-                if let website = sanitizedBody["website"] as? String,
-                   let username = sanitizedBody["username"] as? String,
-                   let password = sanitizedBody["password"] as? String {
-                    
-                    Task {
-                        await savePassword(website: website, username: username, password: password)
-                    }
-                }
-                
-            default:
-                break
-            }
-            
-        case .invalid(let error):
-            NSLog("🔒 CSP: Autofill message validation failed: \(error.description)")
+        guard isAutofillEnabled, message.name == "autofillHandler",
+              let webView = message.webView,
+              webView.configuration.websiteDataStore.isPersistent,
+              let pageURL = webView.url,
+              BrowserSecurityPolicy.Origin(url: pageURL)?.scheme == "https",
+              BrowserSecurityPolicy.allowsBridgeMessage(
+                isMainFrame: message.frameInfo.isMainFrame,
+                scheme: message.frameInfo.securityOrigin.protocol,
+                host: message.frameInfo.securityOrigin.host,
+                port: message.frameInfo.securityOrigin.port,
+                topLevelURL: pageURL),
+              case .valid(let body) = CSPManager.shared.validateMessageInput(message, expectedHandler: "autofillHandler"),
+              body["type"] as? String == "requestCredentials" else { return }
+
+        let matchingPasswords = savedPasswords.filter {
+            BrowserSecurityPolicy.credentialMatches(website: $0.website, pageURL: pageURL)
+        }
+        guard !matchingPasswords.isEmpty else { return }
+        DispatchQueue.main.async {
+            // Ignore queued messages if navigation changed the target document.
+            guard webView.url == pageURL else { return }
+            NotificationCenter.default.post(name: .showAutofillSuggestions,
+                object: AutofillSuggestion(passwords: matchingPasswords, webView: webView))
         }
     }
-    
-    private func showAutofillSuggestions(for website: String, in webView: WKWebView?) {
-        let matchingPasswords = savedPasswords.filter { 
-            $0.website.contains(website) || website.contains($0.website)
-        }
-        
-        if !matchingPasswords.isEmpty {
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: .showAutofillSuggestions,
-                    object: AutofillSuggestion(passwords: matchingPasswords, webView: webView)
-                )
-            }
-        }
-    }
-    
+
     struct AutofillSuggestion {
         let passwords: [SavedPassword]
         let webView: WKWebView?

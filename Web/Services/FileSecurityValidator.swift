@@ -202,6 +202,7 @@ class FileSecurityValidator: ObservableObject {
     ]
 
     private let documentExtensions: Set<String> = [
+        "txt",
         "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
         "rtf", "odt", "ods", "odp", "pages", "numbers", "key",
     ]
@@ -219,8 +220,8 @@ class FileSecurityValidator: ObservableObject {
 
     // MARK: - Initialization
 
-    private init() {
-        loadSecuritySettings()
+    init(loadPersistedSettings: Bool = true) {
+        if loadPersistedSettings { loadSecuritySettings() }
         AppLog.debug("FileSecurityValidator init: policy=\(self.securityPolicy.displayName)")
     }
 

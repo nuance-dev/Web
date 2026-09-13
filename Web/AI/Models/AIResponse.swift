@@ -65,7 +65,7 @@ struct ResponseMetadata {
     let energyImpact: EnergyImpact
     
     init(
-        modelVersion: String = "gemma-3n-4b-it",
+        modelVersion: String = LocalModelDefaults.repositoryID,
         inferenceMethod: InferenceMethod = .mlx,
         contextUsed: Bool = false,
         referencedTabs: [TabReference] = [],

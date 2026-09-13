@@ -40,6 +40,11 @@ final class AutofillService: ObservableObject {
         }
     }
 
+    func clearHistory() {
+        history.removeAll()
+        suggestions.removeAll()
+    }
+
     func addBookmark(url: String, title: String) {
         let key = url.lowercased()
         let item = AutofillSuggestion(url: url,

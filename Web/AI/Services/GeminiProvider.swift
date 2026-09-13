@@ -27,102 +27,14 @@ class GeminiProvider: ExternalAPIProvider {
     // MARK: - Model Management
 
     override func loadAvailableModels() async {
-        availableModels = [
-            AIModel(
-                id: "gemini-1.5-pro-latest",
-                name: "Gemini 1.5 Pro (latest)",
-                description: "Latest Gemini model with advanced multimodal capabilities",
-                contextWindow: 2_097_152,  // 2M tokens
-                costPerToken: nil,
-                pricing: ModelPricing(
-                    inputPerMTokensUSD: 3.0,  // placeholder
-                    outputPerMTokensUSD: 12.0,  // placeholder
-                    cachedInputPerMTokensUSD: nil
-                ),
-                capabilities: [
-                    .textGeneration, .conversation, .summarization, .codeGeneration, .imageAnalysis,
-                    .functionCalling,
-                ],
-                provider: providerId,
-                isAvailable: true
-            ),
-            AIModel(
-                id: "gemini-1.5-flash-latest",
-                name: "Gemini 1.5 Flash (latest)",
-                description: "Fast, efficient Gemini model for quick responses",
-                contextWindow: 1_048_576,  // 1M tokens
-                costPerToken: nil,
-                pricing: ModelPricing(
-                    inputPerMTokensUSD: 0.15,  // placeholder
-                    outputPerMTokensUSD: 0.6,  // placeholder
-                    cachedInputPerMTokensUSD: nil
-                ),
-                capabilities: [
-                    .textGeneration, .conversation, .summarization, .codeGeneration, .imageAnalysis,
-                ],
-                provider: providerId,
-                isAvailable: true
-            ),
-            AIModel(
-                id: "gemini-2.0-flash-exp",
-                name: "Gemini 2.0 Flash (exp)",
-                description: "Experimental Gemini 2.0 Flash with advanced multimodal capabilities",
-                contextWindow: 1_048_576,  // 1M tokens
-                costPerToken: nil,
-                pricing: ModelPricing(
-                    inputPerMTokensUSD: 0.1,  // placeholder
-                    outputPerMTokensUSD: 0.4,  // placeholder
-                    cachedInputPerMTokensUSD: nil
-                ),
-                capabilities: [
-                    .textGeneration, .conversation, .summarization, .codeGeneration, .imageAnalysis,
-                    .functionCalling,
-                ],
-                provider: providerId,
-                isAvailable: true
-            ),
-        ]
-
-        // Set default model
-        if selectedModel == nil {
-            selectedModel =
-                availableModels.first { $0.id == "gemini-1.5-pro-latest" } ?? availableModels.first
-        }
-
-        AppLog.debug("Gemini models loaded: \(availableModels.count)")
+        availableModels = AIModelCatalog.gemini
+        restoreSelectedModel()
     }
 
-    // MARK: - Configuration Validation
-
     override func validateConfiguration() async throws {
-        guard apiKey != nil else {
-            throw AIProviderError.missingAPIKey(displayName)
-        }
-
-        // Test API key with a simple request
-        let modelName = "gemini-1.5-flash"
-        let testPayload: [String: Any] = [
-            "contents": [
-                [
-                    "parts": [
-                        ["text": "Hi"]
-                    ]
-                ]
-            ],
-            "generationConfig": [
-                "maxOutputTokens": 5
-            ],
-        ]
-
-        do {
-            let _ = try await makeAPIRequest(
-                endpoint: "/models/\(modelName):generateContent",
-                payload: testPayload
-            )
-            AppLog.debug("Gemini API key validated")
-        } catch {
-            throw AIProviderError.authenticationFailed
-        }
+        guard let apiKey else { throw AIProviderError.missingAPIKey(displayName) }
+        try await validateModelsEndpoint(URL(string: "https://generativelanguage.googleapis.com/v1beta/models")!,
+                                         headers: ["x-goog-api-key": apiKey])
     }
 
     // MARK: - Core AI Methods
@@ -134,7 +46,7 @@ class GeminiProvider: ExternalAPIProvider {
         model: AIModel?
     ) async throws -> AIResponse {
         let startTime = Date()
-        let modelId = model?.id ?? selectedModel?.id ?? "gemini-2.0-flash-exp"
+        let modelId = model?.id ?? selectedModel?.id ?? "gemini-3.8-flash"
 
         // Apply rate limiting
         await applyRateLimit()
@@ -172,17 +84,7 @@ class GeminiProvider: ExternalAPIProvider {
             ],
         ]
 
-        // Add system instruction if we have context
-        if let context = context, !context.isEmpty {
-            payload["systemInstruction"] = [
-                "parts": [
-                    [
-                        "text":
-                            "You are a helpful assistant. Answer questions based on the provided webpage content:\n\n\(context)"
-                    ]
-                ]
-            ]
-        }
+        payload["systemInstruction"] = ["parts": [["text": AIContextPolicy.systemInstruction]]]
 
         do {
             let response = try await makeAPIRequest(
@@ -230,14 +132,14 @@ class GeminiProvider: ExternalAPIProvider {
                 estimatedCostUSD: cost,
                 success: true,
                 latencyMs: Int(responseTime * 1000),
-                contextIncluded: (context != nil)
+                contextIncluded: (effectiveContext != nil)
             )
 
             // Create metadata for external API response
             let metadata = ResponseMetadata(
                 modelVersion: modelId,
                 inferenceMethod: .fallback,
-                contextUsed: context != nil,
+                contextUsed: effectiveContext != nil,
                 processingSteps: [],
                 memoryUsage: 0,
                 energyImpact: responseTime > 5.0 ? .moderate : .low
@@ -264,7 +166,7 @@ class GeminiProvider: ExternalAPIProvider {
         conversationHistory: [ConversationMessage],
         model: AIModel?
     ) async throws -> AsyncThrowingStream<String, Error> {
-        let modelId = model?.id ?? selectedModel?.id ?? "gemini-2.0-flash-exp"
+        let modelId = model?.id ?? selectedModel?.id ?? "gemini-3.8-flash"
 
         // Apply rate limiting
         await applyRateLimit()
@@ -284,20 +186,10 @@ class GeminiProvider: ExternalAPIProvider {
             ],
         ]
 
-        // Add system instruction if we have context
-        if let context = context, !context.isEmpty {
-            payload["systemInstruction"] = [
-                "parts": [
-                    [
-                        "text":
-                            "You are a helpful assistant. Answer questions based on the provided webpage content:\n\n\(context)"
-                    ]
-                ]
-            ]
-        }
+        payload["systemInstruction"] = ["parts": [["text": AIContextPolicy.systemInstruction]]]
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     let startTime = Date()
                     var charCount = 0
@@ -314,8 +206,7 @@ class GeminiProvider: ExternalAPIProvider {
                     // Log usage on finish (estimate tokens on streaming)
                     let estTokens = Int((Double(charCount) / 4.0).rounded())
                     let responseTime = Date().timeIntervalSince(startTime)
-                    let estCost = estimateCostUSD(
-                        forModelId: modelId, promptTokens: 0, completionTokens: estTokens)
+                    let estCost: Double? = nil // Partial token estimates cannot establish a bill.
                     // Update in-memory stats for settings view
                     updateUsageStats(
                         tokenCount: estTokens,
@@ -331,7 +222,7 @@ class GeminiProvider: ExternalAPIProvider {
                         estimatedCostUSD: estCost,
                         success: true,
                         latencyMs: Int(responseTime * 1000),
-                        contextIncluded: (context != nil)
+                        contextIncluded: (effectiveContext != nil)
                     )
 
                     continuation.finish()
@@ -340,6 +231,7 @@ class GeminiProvider: ExternalAPIProvider {
                     continuation.finish(throwing: handleAPIError(error))
                 }
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 
@@ -347,7 +239,7 @@ class GeminiProvider: ExternalAPIProvider {
         prompt: String,
         model: AIModel?
     ) async throws -> String {
-        let modelId = model?.id ?? selectedModel?.id ?? "gemini-2.0-flash-exp"
+        let modelId = model?.id ?? selectedModel?.id ?? "gemini-3.8-flash"
 
         await applyRateLimit()
 
@@ -414,12 +306,12 @@ class GeminiProvider: ExternalAPIProvider {
             throw AIProviderError.missingAPIKey(displayName)
         }
 
-        // Construct URL with API key as query parameter
+        // Keep API keys in headers, never request URLs.
         guard var urlComponents = URLComponents(string: baseURL + endpoint) else {
             throw AIProviderError.invalidConfiguration("Invalid API endpoint")
         }
 
-        urlComponents.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        urlComponents.queryItems = endpoint.contains("streamGenerateContent") ? [URLQueryItem(name: "alt", value: "sse")] : nil
 
         guard let url = urlComponents.url else {
             throw AIProviderError.invalidConfiguration("Failed to construct URL")
@@ -428,6 +320,7 @@ class GeminiProvider: ExternalAPIProvider {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         do {
@@ -440,8 +333,9 @@ class GeminiProvider: ExternalAPIProvider {
         var lastStatus: Int?
         var lastResponse: HTTPURLResponse?
         for attempt in 1...maxAttempts {
+            try Task.checkCancellation()
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await AIProviderNetwork.session.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw AIProviderError.networkError(URLError(.badServerResponse))
                 }
@@ -477,7 +371,7 @@ class GeminiProvider: ExternalAPIProvider {
                     lastStatus = httpResponse.statusCode
                     if attempt < maxAttempts {
                         let delay = backoffDelayForAttempt(attempt, response: httpResponse)
-                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         continue
                     } else {
                         recordRequestFailure(httpStatus: httpResponse.statusCode)
@@ -489,15 +383,8 @@ class GeminiProvider: ExternalAPIProvider {
                     throw AIProviderError.providerSpecificError("HTTP \(httpResponse.statusCode)")
                 }
             } catch {
-                lastError = error
-                if attempt < maxAttempts {
-                    let delay = backoffDelayForAttempt(attempt, response: lastResponse)
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                } else {
-                    recordRequestFailure(httpStatus: lastStatus)
-                    throw handleAPIError(error)
-                }
+                recordRequestFailure(httpStatus: lastStatus)
+                throw error
             }
         }
         recordRequestFailure(httpStatus: lastStatus)
@@ -515,12 +402,12 @@ class GeminiProvider: ExternalAPIProvider {
             throw AIProviderError.missingAPIKey(displayName)
         }
 
-        // Construct URL with API key as query parameter
+        // Keep API keys in headers, never request URLs.
         guard var urlComponents = URLComponents(string: baseURL + endpoint) else {
             throw AIProviderError.invalidConfiguration("Invalid API endpoint")
         }
 
-        urlComponents.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        urlComponents.queryItems = endpoint.contains("streamGenerateContent") ? [URLQueryItem(name: "alt", value: "sse")] : nil
 
         guard let url = urlComponents.url else {
             throw AIProviderError.invalidConfiguration("Failed to construct URL")
@@ -529,14 +416,15 @@ class GeminiProvider: ExternalAPIProvider {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
 
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await AIProviderNetwork.session.bytes(for: request)
 
                     guard let httpResponse = response as? HTTPURLResponse,
                         httpResponse.statusCode == 200
@@ -547,9 +435,11 @@ class GeminiProvider: ExternalAPIProvider {
 
                     recordRequestSuccess()
                     for try await line in bytes.lines {
-                        // Gemini uses newline-delimited JSON format
-                        if !line.isEmpty,
-                            let jsonData = line.data(using: .utf8),
+                        try Task.checkCancellation()
+                        guard line.hasPrefix("data:") else { continue }
+                        let eventData = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if !eventData.isEmpty,
+                            let jsonData = eventData.data(using: .utf8),
                             let json = try? JSONSerialization.jsonObject(with: jsonData)
                                 as? [String: Any],
                             let candidates = json["candidates"] as? [[String: Any]],
@@ -569,39 +459,16 @@ class GeminiProvider: ExternalAPIProvider {
                     continuation.finish(throwing: handleAPIError(error))
                 }
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 
     // MARK: - Helper Methods
 
-    private func buildContents(
-        query: String,
-        context: String?,
-        history: [ConversationMessage]
-    ) -> [[String: Any]] {
-        var contents: [[String: Any]] = []
-
-        // Recent conversation history (last 10 messages, converted to Gemini format)
-        let recentHistory = Array(history.suffix(10))
-        for message in recentHistory {
-            let role = message.role == .user ? "user" : "model"
-            contents.append([
-                "role": role,
-                "parts": [
-                    ["text": message.content]
-                ],
-            ])
-        }
-
-        // Current query
-        contents.append([
-            "role": "user",
-            "parts": [
-                ["text": query]
-            ],
-        ])
-
-        return contents
+    func buildContents(query: String, context: String?, history: [ConversationMessage]) -> [[String: Any]] {
+        AIContextPolicy.messages(query: query, context: context, history: history)
+            .filter { $0["role"] != "system" }
+            .map { ["role": $0["role"] == "assistant" ? "model" : "user", "parts": [["text": $0["content"]!]]] }
     }
 
     private func applyRateLimit() async {
@@ -629,8 +496,8 @@ class GeminiProvider: ExternalAPIProvider {
                 name: "Model",
                 description: "Select the Gemini model to use",
                 type: .selection(availableModels.map { $0.name }),
-                defaultValue: "Gemini 2.0 Flash",
-                currentValue: selectedModel?.name ?? "Gemini 2.0 Flash",
+                defaultValue: "Gemini 3.8 Flash",
+                currentValue: selectedModel?.name ?? "Gemini 3.8 Flash",
                 isRequired: true
             ),
             AIProviderSetting(

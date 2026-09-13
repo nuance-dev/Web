@@ -1,0 +1,24 @@
+name: Suggest an improvement
+description: A browsing task Web could handle better.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check existing issues and the [product direction](https://github.com/nuance-dev/Web/blob/main/docs/product-direction.md) first. Describe the task before the feature. A small change that removes friction is welcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: A concrete example is more useful than a feature list. Keep private browsing details out of the example.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: Optional. A sketch, interaction example or reference is enough.
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How do you handle it now?
+      description: Optional. Include an existing workaround or browser behavior worth comparing.

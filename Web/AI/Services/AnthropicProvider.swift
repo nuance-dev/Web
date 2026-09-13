@@ -28,95 +28,14 @@ class AnthropicProvider: ExternalAPIProvider {
     // MARK: - Model Management
 
     override func loadAvailableModels() async {
-        availableModels = [
-            AIModel(
-                id: "claude-4-sonnet-latest",
-                name: "Claude 4 Sonnet (latest)",
-                description: "Most capable Claude model, excellent for complex tasks and reasoning",
-                contextWindow: 200000,
-                costPerToken: nil,
-                pricing: ModelPricing(
-                    inputPerMTokensUSD: 3.0,  // placeholder
-                    outputPerMTokensUSD: 15.0,  // placeholder
-                    cachedInputPerMTokensUSD: nil
-                ),
-                capabilities: [
-                    .textGeneration, .conversation, .summarization, .codeGeneration, .imageAnalysis,
-                    .functionCalling,
-                ],
-                provider: providerId,
-                isAvailable: true
-            ),
-            AIModel(
-                id: "claude-4-haiku-latest",
-                name: "Claude 4 Haiku (latest)",
-                description: "Fastest Claude model, optimized for quick responses",
-                contextWindow: 200000,
-                costPerToken: nil,
-                pricing: ModelPricing(
-                    inputPerMTokensUSD: 0.25,  // placeholder
-                    outputPerMTokensUSD: 1.25,  // placeholder
-                    cachedInputPerMTokensUSD: nil
-                ),
-                capabilities: [.textGeneration, .conversation, .summarization, .codeGeneration],
-                provider: providerId,
-                isAvailable: true
-            ),
-            AIModel(
-                id: "claude-4-opus-latest",
-                name: "Claude 4 Opus (latest)",
-                description: "Most powerful Claude model for the most complex tasks",
-                contextWindow: 200000,
-                costPerToken: nil,
-                pricing: ModelPricing(
-                    inputPerMTokensUSD: 15.0,  // placeholder
-                    outputPerMTokensUSD: 75.0,  // placeholder
-                    cachedInputPerMTokensUSD: nil
-                ),
-                capabilities: [
-                    .textGeneration, .conversation, .summarization, .codeGeneration, .imageAnalysis,
-                    .functionCalling,
-                ],
-                provider: providerId,
-                isAvailable: true
-            ),
-        ]
-
-        // Set default model
-        if selectedModel == nil {
-            selectedModel =
-                availableModels.first { $0.id == "claude-4-sonnet-latest" }
-                ?? availableModels.first
-        }
-
-        AppLog.debug("Anthropic models loaded: \(availableModels.count)")
+        availableModels = AIModelCatalog.anthropic
+        restoreSelectedModel()
     }
 
-    // MARK: - Configuration Validation
-
     override func validateConfiguration() async throws {
-        guard let apiKey = apiKey else {
-            throw AIProviderError.missingAPIKey(displayName)
-        }
-
-        // Test API key with a simple request
-        let testPayload: [String: Any] = [
-            "model": "claude-4-haiku-latest",
-            "max_tokens": 5,
-            "messages": [
-                ["role": "user", "content": "Hi"]
-            ],
-        ]
-
-        do {
-            let _ = try await makeAPIRequest(
-                endpoint: "/messages",
-                payload: testPayload
-            )
-            AppLog.debug("Anthropic API key validated")
-        } catch {
-            throw AIProviderError.authenticationFailed
-        }
+        guard let apiKey else { throw AIProviderError.missingAPIKey(displayName) }
+        try await validateModelsEndpoint(URL(string: "https://api.anthropic.com/v1/models")!,
+                                         headers: ["x-api-key": apiKey, "anthropic-version": anthropicVersion])
     }
 
     // MARK: - Core AI Methods
@@ -128,7 +47,7 @@ class AnthropicProvider: ExternalAPIProvider {
         model: AIModel?
     ) async throws -> AIResponse {
         let startTime = Date()
-        let modelId = model?.id ?? selectedModel?.id ?? "claude-4-sonnet-latest"
+        let modelId = model?.id ?? selectedModel?.id ?? "claude-sonnet-5"
 
         // Apply rate limiting
         await applyRateLimit()
@@ -144,11 +63,7 @@ class AnthropicProvider: ExternalAPIProvider {
             "messages": messages,
         ]
 
-        // Add system message if we have context
-        if let context = context, !context.isEmpty {
-            payload["system"] =
-                "You are a helpful assistant. Answer questions based on the provided webpage content:\n\n\(context)"
-        }
+        payload["system"] = AIContextPolicy.systemInstruction
 
         do {
             let response = try await makeAPIRequest(
@@ -157,8 +72,7 @@ class AnthropicProvider: ExternalAPIProvider {
             )
 
             guard let content = response["content"] as? [[String: Any]],
-                let firstContent = content.first,
-                let text = firstContent["text"] as? String
+                let text = content.first(where: { $0["type"] as? String == "text" })?["text"] as? String
             else {
                 throw AIProviderError.providerSpecificError(
                     "Invalid response format from Anthropic")
@@ -194,14 +108,14 @@ class AnthropicProvider: ExternalAPIProvider {
                 estimatedCostUSD: cost,
                 success: true,
                 latencyMs: Int(responseTime * 1000),
-                contextIncluded: (context != nil)
+                contextIncluded: (effectiveContext != nil)
             )
 
             // Create metadata for external API response
             let metadata = ResponseMetadata(
                 modelVersion: modelId,
                 inferenceMethod: .fallback,
-                contextUsed: context != nil,
+                contextUsed: effectiveContext != nil,
                 processingSteps: [],
                 memoryUsage: 0,
                 energyImpact: responseTime > 5.0 ? .moderate : .low
@@ -228,7 +142,7 @@ class AnthropicProvider: ExternalAPIProvider {
         conversationHistory: [ConversationMessage],
         model: AIModel?
     ) async throws -> AsyncThrowingStream<String, Error> {
-        let modelId = model?.id ?? selectedModel?.id ?? "claude-4-sonnet-latest"
+        let modelId = model?.id ?? selectedModel?.id ?? "claude-sonnet-5"
 
         // Apply rate limiting
         await applyRateLimit()
@@ -245,14 +159,10 @@ class AnthropicProvider: ExternalAPIProvider {
             "stream": true,
         ]
 
-        // Add system message if we have context
-        if let context = context, !context.isEmpty {
-            payload["system"] =
-                "You are a helpful assistant. Answer questions based on the provided webpage content:\n\n\(context)"
-        }
+        payload["system"] = AIContextPolicy.systemInstruction
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     let startTime = Date()
                     var charCount = 0
@@ -271,8 +181,7 @@ class AnthropicProvider: ExternalAPIProvider {
                     // Log usage on finish (estimate tokens on streaming)
                     let estTokens = Int((Double(charCount) / 4.0).rounded())
                     let responseTime = Date().timeIntervalSince(startTime)
-                    let estCost = estimateCostUSD(
-                        forModelId: modelId, promptTokens: 0, completionTokens: estTokens)
+                    let estCost: Double? = nil // Partial token estimates cannot establish a bill.
                     // Update in-memory stats for settings view
                     updateUsageStats(
                         tokenCount: estTokens,
@@ -288,7 +197,7 @@ class AnthropicProvider: ExternalAPIProvider {
                         estimatedCostUSD: estCost,
                         success: true,
                         latencyMs: Int(responseTime * 1000),
-                        contextIncluded: (context != nil)
+                        contextIncluded: (effectiveContext != nil)
                     )
 
                     continuation.finish()
@@ -297,6 +206,7 @@ class AnthropicProvider: ExternalAPIProvider {
                     continuation.finish(throwing: handleAPIError(error))
                 }
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 
@@ -304,13 +214,14 @@ class AnthropicProvider: ExternalAPIProvider {
         prompt: String,
         model: AIModel?
     ) async throws -> String {
-        let modelId = model?.id ?? selectedModel?.id ?? "claude-4-sonnet-latest"
+        let modelId = model?.id ?? selectedModel?.id ?? "claude-sonnet-5"
 
         await applyRateLimit()
 
         let payload: [String: Any] = [
             "model": modelId,
             "max_tokens": 2048,
+            "system": AIContextPolicy.systemInstruction,
             "messages": [
                 ["role": "user", "content": prompt]
             ],
@@ -322,8 +233,7 @@ class AnthropicProvider: ExternalAPIProvider {
         )
 
         guard let content = response["content"] as? [[String: Any]],
-            let firstContent = content.first,
-            let text = firstContent["text"] as? String
+            let text = content.first(where: { $0["type"] as? String == "text" })?["text"] as? String
         else {
             throw AIProviderError.providerSpecificError("Invalid response format from Anthropic")
         }
@@ -383,8 +293,9 @@ class AnthropicProvider: ExternalAPIProvider {
         var lastStatus: Int?
         var lastResponse: HTTPURLResponse?
         for attempt in 1...maxAttempts {
+            try Task.checkCancellation()
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await AIProviderNetwork.session.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw AIProviderError.networkError(URLError(.badServerResponse))
                 }
@@ -411,7 +322,7 @@ class AnthropicProvider: ExternalAPIProvider {
                     lastStatus = httpResponse.statusCode
                     if attempt < maxAttempts {
                         let delay = backoffDelayForAttempt(attempt, response: httpResponse)
-                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         continue
                     } else {
                         recordRequestFailure(httpStatus: httpResponse.statusCode)
@@ -423,15 +334,8 @@ class AnthropicProvider: ExternalAPIProvider {
                     throw AIProviderError.providerSpecificError("HTTP \(httpResponse.statusCode)")
                 }
             } catch {
-                lastError = error
-                if attempt < maxAttempts {
-                    let delay = backoffDelayForAttempt(attempt, response: lastResponse)
-                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                    continue
-                } else {
-                    recordRequestFailure(httpStatus: lastStatus)
-                    throw handleAPIError(error)
-                }
+                recordRequestFailure(httpStatus: lastStatus)
+                throw error
             }
         }
         recordRequestFailure(httpStatus: lastStatus)
@@ -463,9 +367,9 @@ class AnthropicProvider: ExternalAPIProvider {
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await AIProviderNetwork.session.bytes(for: request)
 
                     guard let httpResponse = response as? HTTPURLResponse,
                         httpResponse.statusCode == 200
@@ -476,6 +380,7 @@ class AnthropicProvider: ExternalAPIProvider {
 
                     recordRequestSuccess()
                     for try await line in bytes.lines {
+                        try Task.checkCancellation()
                         if line.hasPrefix("data: ") {
                             let data = String(line.dropFirst(6))
 
@@ -511,41 +416,16 @@ class AnthropicProvider: ExternalAPIProvider {
                     continuation.finish(throwing: handleAPIError(error))
                 }
             }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
         }
     }
 
     // MARK: - Helper Methods
 
-    private func buildMessages(
-        query: String,
-        context: String?,
-        history: [ConversationMessage]
-    ) -> [[String: Any]] {
-        var messages: [[String: Any]] = []
-
-        // Recent conversation history (last 10 messages)
-        let recentHistory = Array(history.suffix(10))
-        for message in recentHistory {
-            let role = message.role == .user ? "user" : "assistant"
-            messages.append([
-                "role": role,
-                "content": [
-                    ["type": "text", "text": message.content]
-                ],
-            ])
-        }
-
-        // Current query
-        var queryContent: [[String: Any]] = [
-            ["type": "text", "text": query]
-        ]
-
-        messages.append([
-            "role": "user",
-            "content": queryContent,
-        ])
-
-        return messages
+    func buildMessages(query: String, context: String?, history: [ConversationMessage]) -> [[String: Any]] {
+        AIContextPolicy.messages(query: query, context: context, history: history)
+            .filter { $0["role"] != "system" }
+            .map { ["role": $0["role"]!, "content": [["type": "text", "text": $0["content"]!]]] }
     }
 
     private func applyRateLimit() async {
@@ -573,8 +453,8 @@ class AnthropicProvider: ExternalAPIProvider {
                 name: "Model",
                 description: "Select the Claude model to use",
                 type: .selection(availableModels.map { $0.name }),
-                defaultValue: "Claude 3.5 Sonnet",
-                currentValue: selectedModel?.name ?? "Claude 3.5 Sonnet",
+                defaultValue: "Claude Sonnet 5",
+                currentValue: selectedModel?.name ?? "Claude Sonnet 5",
                 isRequired: true
             ),
             AIProviderSetting(

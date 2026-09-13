@@ -15,6 +15,7 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var isIncognito: Bool = false
+    @Published var isPinned: Bool = false
     @Published var lastAccessed: Date = Date()
     @Published var isActive: Bool = false
 
@@ -121,6 +122,23 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
         startHibernationTimer()
     }
 
+    /// Explicit teardown breaks script-handler/coordinator ownership cycles when a tab closes.
+    func dispose() {
+        TabHibernationManager.shared.forgetTab(id)
+        hibernationTimer?.invalidate()
+        hibernationTimer = nil
+        webView?.stopLoading()
+        webView?.configuration.userContentController.removeAllScriptMessageHandlers()
+        webView?.navigationDelegate = nil
+        webView?.uiDelegate = nil
+        webView = nil
+        snapshot = nil
+        preservedState = nil
+        backHistory = []
+        forwardHistory = []
+        isActive = false
+    }
+
     // MARK: - Navigation Methods
     func goBack() {
         webView?.goBack()
@@ -161,10 +179,8 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
     func wakeUp() {
         guard isHibernated else { return }
 
-        // Use TabHibernationManager for proper WebView recreation
-        let restoredWebView = TabHibernationManager.shared.wakeUpTab(self)
-
-        if restoredWebView != nil {
+        // SwiftUI creates the configured browser view once after waking.
+        if TabHibernationManager.shared.wakeUpTab(self) {
             updateLastAccessed()
         }
     }
@@ -233,23 +249,23 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
 
     /// Restores comprehensive tab state after hibernation
     func restoreState(to webView: WKWebView) {
-        guard let state = preservedState else { return }
-
-        // Restore zoom scale
-        webView.magnification = state.zoomScale
-
-        // Restore scroll position after page loads
-        let script = """
-                window.scrollTo(\(state.scrollPosition.x), \(state.scrollPosition.y));
-            """
-
-        webView.evaluateJavaScript(script)
-
-        // Update tab properties from preserved state
-        self.scrollPosition = state.scrollPosition
-        self.zoomScale = state.zoomScale
-        self.hasFormData = state.hasFormData
-        self.hasMediaPlayback = state.hasMediaPlayback
+        let state = preservedState
+        preservedState = nil
+        snapshot = nil
+        guard let state else {
+            webView.magnification = zoomScale.isFinite ? min(3, max(0.5, zoomScale)) : 1
+            return
+        }
+        guard state.url == webView.url else { return }
+        let zoom = state.zoomScale.isFinite ? min(3, max(0.5, state.zoomScale)) : 1
+        let position = state.scrollPosition
+        guard position.x.isFinite, position.y.isFinite else { return }
+        let x = min(100_000_000, max(0, position.x))
+        let y = min(100_000_000, max(0, position.y))
+        webView.magnification = zoom
+        webView.evaluateJavaScript("window.scrollTo(\(x), \(y));")
+        scrollPosition = CGPoint(x: x, y: y)
+        zoomScale = zoom
     }
 
     /// Detects if the page has form data that might be lost

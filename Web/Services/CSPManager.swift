@@ -3,24 +3,9 @@ import Foundation
 import SwiftUI
 import WebKit
 
-/// CSPManager - Comprehensive Content Security Policy Management
-///
-/// This service provides complete CSP protection for all JavaScript injection points
-/// in the browser, preventing XSS attacks, script manipulation, and data exfiltration.
-///
-/// Security Features:
-/// - CSP nonce generation and validation for all injected scripts
-/// - Input validation for all JavaScript→Native message bridges
-/// - CSP violation monitoring and reporting
-/// - Script integrity protection and tampering detection
-/// - Centralized security policy management
-///
-/// Attack Vectors Addressed:
-/// - XSS attacks through script injection
-/// - Script manipulation by malicious websites
-/// - Data exfiltration through compromised JavaScript bridges
-/// - Man-in-the-middle script tampering
-/// - Reflection-based XSS in message handlers
+/// Helpers for app-injected scripts and validation of native messages.
+/// WebKit enforces each site's CSP. A nonce inside a JavaScript wrapper is not
+/// a security boundary; privileged handlers also need content-world isolation.
 class CSPManager: NSObject, ObservableObject {
     static let shared = CSPManager()
 
@@ -255,8 +240,8 @@ class CSPManager: NSObject, ObservableObject {
     // MARK: - Message Handler Input Validation
 
     /**
-     * Validates and sanitizes input from JavaScript message handlers
-     * Prevents XSS, injection attacks, and data exfiltration
+     * Validates frame origin and bounds the shape and size of native messages.
+     * This does not replace content-world isolation or per-handler authorization.
      */
     func validateMessageInput(_ message: WKScriptMessage, expectedHandler: String)
         -> ValidationResult
@@ -266,7 +251,7 @@ class CSPManager: NSObject, ObservableObject {
                 .unexpectedMessageHandler(
                     expected: expectedHandler,
                     received: message.name,
-                    source: message.webView?.url?.host ?? "unknown"
+                    source: "web-content"
                 ))
             return .invalid(.unexpectedHandler)
         }
@@ -275,34 +260,34 @@ class CSPManager: NSObject, ObservableObject {
             logSecurityViolation(
                 .invalidMessageFormat(
                     handler: expectedHandler,
-                    source: message.webView?.url?.host ?? "unknown"
+                    source: "web-content"
                 ))
             return .invalid(.malformedData)
         }
 
-        // Validate required fields
-        guard body["type"] is String else {
-            logSecurityViolation(
-                .missingRequiredField(
-                    field: "type",
-                    handler: expectedHandler,
-                    source: message.webView?.url?.host ?? "unknown"
-                ))
-            return .invalid(.missingRequiredField)
+        guard BrowserSecurityPolicy.allowsBridgeMessage(
+            isMainFrame: message.frameInfo.isMainFrame,
+            scheme: message.frameInfo.securityOrigin.protocol,
+            host: message.frameInfo.securityOrigin.host,
+            port: message.frameInfo.securityOrigin.port,
+            topLevelURL: message.webView?.url) else {
+            return .invalid(.untrustedOrigin)
         }
-
-        // Sanitize string inputs
-        let sanitizedBody = sanitizeMessageBody(body)
-
-        // Check for potential XSS payloads
-        if containsPotentialXSS(sanitizedBody) {
-            logSecurityViolation(
-                .potentialXSSAttempt(
-                    handler: expectedHandler,
-                    payload: String(describing: sanitizedBody),
-                    source: message.webView?.url?.host ?? "unknown"
-                ))
-            return .invalid(.potentialXSS)
+        guard let type = body["type"] as? String, !type.isEmpty, type.utf8.count <= 80,
+              body.count <= 16 else { return .invalid(.malformedData) }
+        // Reject oversized/nested messages before traversing them or retaining data.
+        // Values are data, not HTML: do not rewrite passwords or legitimate URLs.
+        for (key, value) in body {
+            guard key.utf8.count <= 80 else { return .invalid(.malformedData) }
+            if let string = value as? String {
+                guard string.utf8.count <= 16_384 else { return .invalid(.malformedData) }
+            } else if let number = value as? NSNumber {
+                guard number.doubleValue.isFinite, abs(number.doubleValue) <= 1_000_000 else {
+                    return .invalid(.malformedData)
+                }
+            } else {
+                return .invalid(.malformedData)
+            }
         }
 
         // Rate limiting check
@@ -310,12 +295,12 @@ class CSPManager: NSObject, ObservableObject {
             logSecurityViolation(
                 .rateLimitExceeded(
                     handler: expectedHandler,
-                    source: message.webView?.url?.host ?? "unknown"
+                    source: "web-content"
                 ))
             return .invalid(.rateLimitExceeded)
         }
 
-        return .valid(sanitizedBody)
+        return .valid(body)
     }
 
     enum ValidationResult {
@@ -324,6 +309,7 @@ class CSPManager: NSObject, ObservableObject {
     }
 
     enum ValidationError {
+        case untrustedOrigin
         case unexpectedHandler
         case malformedData
         case missingRequiredField
@@ -334,6 +320,7 @@ class CSPManager: NSObject, ObservableObject {
 
         var description: String {
             switch self {
+            case .untrustedOrigin: return "Message origin does not match the active page"
             case .unexpectedHandler: return "Unexpected message handler"
             case .malformedData: return "Malformed message data"
             case .missingRequiredField: return "Missing required field"
@@ -773,7 +760,7 @@ extension CSPManager: WKScriptMessageHandler {
                     logSecurityViolation(
                         .scriptTampering(
                             scriptType: scriptType,
-                            source: message.webView?.url?.host ?? "unknown"
+                            source: "web-content"
                         ))
 
                 default:

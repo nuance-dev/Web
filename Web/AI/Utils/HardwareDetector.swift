@@ -140,16 +140,16 @@ class HardwareDetector {
         case .appleSilicon(_):
             return AIConfiguration(
                 framework: .mlx,
-                modelVariant: .gemma3n_2B, // Single bundled model
+                modelVariant: .gemma3_1B, // Compatible downloadable model
                 quantization: .int4,
-                maxContextTokens: 32768, // Gemma 3n context length
+                maxContextTokens: 32768, // Model context; requests use a smaller bounded source
                 maxMemoryGB: recommendedMemoryLimit,
                 expectedTokensPerSecond: expectedTokensPerSecond
             )
         case .intel(_, _):
             return AIConfiguration(
                 framework: .llamaCpp,
-                modelVariant: .gemma3n_2B, // Same bundled model via llama.cpp
+                modelVariant: .gemma3_1B, // Local inference remains unavailable on Intel
                 quantization: .int4,
                 maxContextTokens: 32768,
                 maxMemoryGB: recommendedMemoryLimit,
@@ -158,7 +158,7 @@ class HardwareDetector {
         case .unknown:
             return AIConfiguration(
                 framework: .llamaCpp,
-                modelVariant: .gemma3n_2B,
+                modelVariant: .gemma3_1B,
                 quantization: .int4,
                 maxContextTokens: 16384, // Reduced for safety
                 maxMemoryGB: 1,
@@ -320,7 +320,7 @@ struct AIConfiguration {
     }
     
     enum ModelVariant {
-        case gemma3n_2B    // Gemma 3n 2B - 4.79GB bundled
+        case gemma3_1B    // Gemma 3 1B QAT, downloaded on demand
         case custom(String)
     }
     
@@ -363,4 +363,12 @@ extension HardwareDetector.ProcessorType: CustomStringConvertible {
             return 0.4 // Conservative fallback
         }
     }
+}
+
+/// Shared local routing identity. This exact model is in the pinned MLXLLM registry.
+enum LocalModelDefaults {
+    static let repositoryID = "mlx-community/gemma-3-1b-it-qat-4bit"
+    static let displayName = "Gemma 3 1B (4-bit)"
+    static let contextWindow = 32_768
+    static let downloadSizeGB = 0.733
 }

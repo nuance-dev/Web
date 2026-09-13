@@ -15,20 +15,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
 
     @Published var availableModels: [AIModel] = []
 
-    // Fallback models if no local models are discovered
-    private let fallbackModels: [AIModel] = [
-        AIModel(
-            id: "gemma-3-2b",
-            name: "Gemma 3 2B (4-bit)",
-            description: "Default model - will be downloaded from Hugging Face",
-            contextWindow: 8192,
-            costPerToken: nil,
-            pricing: nil,
-            capabilities: [.textGeneration, .conversation, .summarization],
-            provider: "local_mlx",
-            isAvailable: true
-        )
-    ]
+    private let fallbackModels: [AIModel] = [.defaultLocal]
 
     var selectedModel: AIModel? {
         didSet {
@@ -46,6 +33,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
     private let mlxModelService: MLXModelService
     private let privacyManager: PrivacyManager
     private let modelDiscovery = ModelDiscoveryService.shared
+    private var initializationTask: (id: UUID, task: Task<Void, Error>)?
 
     private var usageStats = AIUsageStatistics(
         requestCount: 0,
@@ -86,23 +74,37 @@ class LocalMLXProvider: AIProvider, ObservableObject {
     // MARK: - Lifecycle Methods
 
     func initialize() async throws {
-        do {
-            // Validate hardware requirements
-            try validateHardware()
-
-            // Initialize underlying services
-            try await mlxWrapper.initialize()
-            try await privacyManager.initialize()
-            try await gemmaService.initialize()
-
-            isInitialized = true
-            AppLog.debug("Local MLX Provider initialized")
-
-        } catch {
-            isInitialized = false
-            throw AIProviderError.invalidConfiguration(
-                "MLX initialization failed: \(error.localizedDescription)")
+        if let pending = initializationTask {
+            try await pending.task.value
+            if initializationTask?.id == pending.id { initializationTask = nil }
         }
+        try validateHardware()
+        await loadAvailableModels()
+        let identifier = try resolvedModelIdentifier(for: selectedModel)
+        if isInitialized && mlxModelService.currentModel?.modelId == identifier,
+           await mlxModelService.isAIReady() { return }
+        if let pending = initializationTask { try await pending.task.value; return }
+
+        let id = UUID()
+        let task = Task { @MainActor in
+            self.isInitialized = false
+            do {
+                if identifier != self.mlxModelService.currentModel?.modelId {
+                    try await self.mlxModelService.switchToModel(.init(
+                        name: self.selectedModel?.name ?? LocalModelDefaults.displayName,
+                        modelId: identifier, estimatedSizeGB: 0, modelKey: identifier))
+                }
+                try await self.mlxWrapper.initialize()
+                try await self.privacyManager.initialize()
+                try await self.gemmaService.initialize()
+                self.isInitialized = true
+            } catch {
+                throw AIProviderError.invalidConfiguration("Local model couldn't load: \(error.localizedDescription)")
+            }
+        }
+        initializationTask = (id, task)
+        defer { if initializationTask?.id == id { initializationTask = nil } }
+        try await task.value
     }
 
     func isReady() async -> Bool {
@@ -130,7 +132,8 @@ class LocalMLXProvider: AIProvider, ObservableObject {
             let response = try await gemmaService.generateResponse(
                 query: query,
                 context: context,
-                conversationHistory: conversationHistory
+                conversationHistory: conversationHistory,
+                modelIdentifier: try resolvedModelIdentifier(for: model)
             )
 
             let responseTime = Date().timeIntervalSince(startTime)
@@ -147,7 +150,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
                 modelId: (model?.id ?? selectedModel?.id ?? AIModel.defaultLocal.id),
                 promptTokens: 0,
                 completionTokens: tokenCount,
-                estimatedCostUSD: nil,
+                estimatedCostUSD: 0,
                 success: true,
                 latencyMs: Int(responseTime * 1000),
                 contextIncluded: (context != nil)
@@ -173,34 +176,23 @@ class LocalMLXProvider: AIProvider, ObservableObject {
         let inner = try await gemmaService.generateStreamingResponse(
             query: query,
             context: context,
-            conversationHistory: conversationHistory
+            conversationHistory: conversationHistory,
+            modelIdentifier: try resolvedModelIdentifier(for: model)
         )
 
-        return AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    var charCount = 0
-                    for try await chunk in inner {
-                        charCount += chunk.count
-                        continuation.yield(chunk)
-                    }
-                    let tokenCount = Int(Double(charCount) / 3.5)
-                    let responseTime = Date().timeIntervalSince(startTime)
-                    AIUsageStore.shared.append(
-                        providerId: providerId,
-                        modelId: modelId,
-                        promptTokens: 0,
-                        completionTokens: tokenCount,
-                        estimatedCostUSD: nil,
-                        success: true,
-                        latencyMs: Int(responseTime * 1000),
-                        contextIncluded: (context != nil)
-                    )
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
+        return LocalAIStream.make { continuation in
+            var charCount = 0
+            for try await chunk in inner {
+                try Task.checkCancellation()
+                charCount += chunk.count
+                continuation.yield(chunk)
             }
+            try Task.checkCancellation()
+            AIUsageStore.shared.append(
+                providerId: self.providerId, modelId: modelId, promptTokens: 0,
+                completionTokens: Int(Double(charCount) / 3.5), estimatedCostUSD: 0,
+                success: true, latencyMs: Int(Date().timeIntervalSince(startTime) * 1000),
+                contextIncluded: context != nil)
         }
     }
 
@@ -211,7 +203,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
         let startTime = Date()
 
         do {
-            let response = try await gemmaService.generateRawResponse(prompt: prompt)
+            let response = try await gemmaService.generateRawResponse(prompt: prompt, modelIdentifier: try resolvedModelIdentifier(for: model))
 
             let responseTime = Date().timeIntervalSince(startTime)
             let tokenCount = Int(Double(response.count) / 3.5)  // Rough estimation
@@ -226,7 +218,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
                 modelId: (model?.id ?? selectedModel?.id ?? AIModel.defaultLocal.id),
                 promptTokens: 0,
                 completionTokens: tokenCount,
-                estimatedCostUSD: nil,
+                estimatedCostUSD: 0,
                 success: true,
                 latencyMs: Int(responseTime * 1000),
                 contextIncluded: false
@@ -245,7 +237,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
         _ messages: [ConversationMessage],
         model: AIModel?
     ) async throws -> String {
-        return try await gemmaService.summarizeConversation(messages)
+        return try await gemmaService.summarizeConversation(messages, modelIdentifier: try resolvedModelIdentifier(for: model))
     }
 
     // MARK: - Configuration Methods
@@ -317,6 +309,15 @@ class LocalMLXProvider: AIProvider, ObservableObject {
 
     // MARK: - Private Methods
 
+    private func resolvedModelIdentifier(for model: AIModel?) throws -> String {
+        let id = model?.id ?? selectedModel?.id ?? LocalModelDefaults.repositoryID
+        if id == LocalModelDefaults.repositoryID { return id }
+        guard let discovered = modelDiscovery.discoveredModels.first(where: { $0.id == id && $0.isValid }) else {
+            throw AIProviderError.modelNotAvailable(id)
+        }
+        return discovered.path
+    }
+
     private func validateHardware() throws {
         switch aiConfiguration.framework {
         case .mlx:
@@ -324,8 +325,7 @@ class LocalMLXProvider: AIProvider, ObservableObject {
                 throw AIProviderError.invalidConfiguration("MLX requires Apple Silicon")
             }
         case .llamaCpp:
-            // Intel Macs supported with llama.cpp
-            break
+            throw AIProviderError.unsupportedOperation("Local models require Apple Silicon. Choose a cloud provider on this Mac.")
         }
 
         guard HardwareDetector.totalMemoryGB >= 8 else {
@@ -374,11 +374,8 @@ class LocalMLXProvider: AIProvider, ObservableObject {
             models.append(aiModel)
         }
 
-        // If no models discovered, use fallback models
-        if models.isEmpty {
-            models = fallbackModels
-            AppLog.debug("No local models discovered; using fallback models")
-        }
+        // Keep the compatible default available even when unrelated caches are discovered.
+        models = fallbackModels + models.filter { $0.id != LocalModelDefaults.repositoryID }
 
         availableModels = models
 
@@ -461,9 +458,9 @@ extension HardwareDetector {
     /// Get recommended configuration based on hardware
     static func getRecommendedLocalConfig() -> (model: String, quantization: String) {
         if totalMemoryGB >= 16 {
-            return ("gemma3_2B_4bit", "4-bit")
+            return (LocalModelDefaults.repositoryID, "4-bit")
         } else {
-            return ("gemma3_2B_4bit", "4-bit")  // Conservative for 8GB systems
+            return (LocalModelDefaults.repositoryID, "4-bit")  // Conservative for 8GB systems
         }
     }
 }

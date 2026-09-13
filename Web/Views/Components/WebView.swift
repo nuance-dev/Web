@@ -55,6 +55,11 @@ struct WebView: NSViewRepresentable {
     let onDownloadRequest: ((URL, String?) -> Void)?
 
     func makeNSView(context: Context) -> WKWebView {
+        if let existing = tab?.webView as? CustomWebView {
+            context.coordinator.parent = self
+            context.coordinator.webView = existing
+            return existing
+        }
         // Use shared WebKitManager for optimized memory usage and shared process pool
         let isIncognito = tab?.isIncognito ?? false
 
@@ -124,22 +129,21 @@ struct WebView: NSViewRepresentable {
         webView.customUserAgent =
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
         if #available(macOS 13.3, *) {
-            webView.isInspectable = true
+            webView.isInspectable = UserDefaults.standard.bool(forKey: "enableDeveloperTools")
         }
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
+        if let zoom = tab?.zoomScale, zoom.isFinite {
+            webView.magnification = min(3, max(0.5, zoom))
+        }
 
         // Configure security services after webview creation
         AdBlockService.shared.configureWebView(webView)
-        DNSOverHTTPSService.shared.configureForWebKit()
 
         // Configure incognito-specific settings if needed
         if let tab = tab, tab.isIncognito {
             IncognitoSession.shared.configureWebViewForIncognito(webView)
             // Do NOT configure autofill for incognito tabs to maintain privacy
-        } else {
-            // Only configure autofill for regular (non-incognito) tabs
-            PasswordManager.shared.configureAutofill(for: webView)
         }
 
         // Configure for optimal web content including WebGL
@@ -180,72 +184,24 @@ struct WebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // CRITICAL FIX: Ensure WebView frame matches container during updates
-        // This handles window resize events for newly created WebViews
-        DispatchQueue.main.async {
-            if let containerView = webView.superview {
-                let containerBounds = containerView.bounds
-                if !webView.frame.equalTo(containerBounds) {
-                    webView.frame = containerBounds
-
-                    // Dispatch resize event to web content
-                    webView.evaluateJavaScript(
-                        """
-                        if (window.dispatchEvent) {
-                            window.dispatchEvent(new Event('resize'));
-                        }
-                        """
-                    ) { _, error in
-                        if let error = error {
-                            if AppLog.isVerboseEnabled {
-                                AppLog.debug(
-                                    "Failed to dispatch resize: \(error.localizedDescription)")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Smart navigation logic - only prevent rapid duplicate requests to same URL
-        if let url = url {
-            // Validate URL before proceeding
-            guard !url.absoluteString.isEmpty else {
-                if AppLog.isVerboseEnabled { print("⚠️ Attempted to load empty URL") }
-                return
-            }
-
-            let isCurrentlyDifferent = webView.url?.absoluteString != url.absoluteString
-            let isNotCurrentlyLoading = !webView.isLoading
-
-            // Only apply minimal debouncing for duplicate requests to the exact same URL
-            let isDuplicateRequest =
-                context.coordinator.lastLoadedURL?.absoluteString == url.absoluteString
-            let now = Date()
-            let timeSinceLastLoad =
-                context.coordinator.lastLoadTime.map { now.timeIntervalSince($0) } ?? 1.0
-
-            // Load if:
-            // 1. URL is different (always allow new URLs)
-            // 2. OR not currently loading
-            // 3. OR if it's a duplicate request, only block if it happened very recently (< 100ms)
-            let shouldLoad =
-                isCurrentlyDifferent || isNotCurrentlyLoading || !isDuplicateRequest
-                || timeSinceLastLoad > 0.1
-
-            if shouldLoad {
-                let request = URLRequest(url: url)
-                webView.load(request)
-
-                // Store the URL and timestamp in coordinator
-                context.coordinator.lastLoadedURL = url
-                context.coordinator.lastLoadTime = now
-            }
-        }
+        context.coordinator.parent = self
+        // Tab.navigate and WebKit own subsequent navigation. SwiftUI only loads an initial URL.
+        guard let requestedURL = url,
+              NavigationResolver.isWebURL(requestedURL),
+              webView.url == nil, !webView.isLoading,
+              context.coordinator.lastLoadedURL != requestedURL
+        else { return }
+        context.coordinator.lastLoadedURL = requestedURL
+        context.coordinator.lastLoadTime = Date()
+        webView.load(URLRequest(url: requestedURL))
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+        if let existing = (tab?.webView as? CustomWebView)?.coordinator {
+            existing.parent = self
+            return existing
+        }
+        return Coordinator(self)
     }
 
     // SECURITY: Helper function to create temporary WebView for CSP script injection
@@ -1025,61 +981,107 @@ struct WebView: NSViewRepresentable {
             fatalError("init(coder:) has not been implemented")
         }
 
+        private struct LinkMenuTarget {
+            let url: URL
+            let sourceURL: URL
+            let sourceTabID: UUID
+            let documentRevision: UInt64
+        }
+
         override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
             super.willOpenMenu(menu, with: event)
-
-            // Check if we have a right-clicked link URL from JavaScript
-            guard let linkURL = coordinator?.rightClickedLinkURL,
-                let url = URL(string: linkURL)
-            else {
-                return  // No link context, use default menu
-            }
-
-            // Find the "Open Link" menu item and add our custom item after it
-            var insertIndex = 0
-            for (index, menuItem) in menu.items.enumerated() {
-                if menuItem.identifier?.rawValue == "WKMenuItemIdentifierOpenLink" {
-                    insertIndex = index + 1
-                    break
+            QuoteAction.addMenuItem(to: menu, for: self, documentRevision: { [weak coordinator] in
+                coordinator?.documentRevision
+            })
+            guard let sourceURL = url, NavigationResolver.isWebURL(sourceURL),
+                  let coordinator, let sourceTabID = coordinator.parent.tab?.id else { return }
+            let revision = coordinator.documentRevision
+            let localPoint = convert(event.locationInWindow, from: nil)
+            let scale = max(magnification, 0.01)
+            let x = localPoint.x / scale
+            let y = (isFlipped ? localPoint.y : bounds.height - localPoint.y) / scale
+            guard x.isFinite, y.isFinite else { return }
+            let script = """
+                (() => {
+                    const element = document.elementFromPoint(\(x), \(y));
+                    const link = element?.closest('a[href]');
+                    return link?.href ?? null;
+                })()
+                """
+            // Read the actual clicked anchor, not a prior page message or hover target.
+            evaluateJavaScript(script, in: nil, in: .defaultClient) { [weak self, weak menu] result in
+                guard let self, let menu,
+                      self.url == sourceURL,
+                      self.coordinator?.documentRevision == revision,
+                      self.coordinator?.parent.tab?.id == sourceTabID,
+                      case .success(let value) = result,
+                      let address = value as? String,
+                      let linkURL = URL(string: address), NavigationResolver.isWebURL(linkURL)
+                else { return }
+                let target = LinkMenuTarget(url: linkURL, sourceURL: sourceURL,
+                                           sourceTabID: sourceTabID, documentRevision: revision)
+                let insertIndex = menu.items.firstIndex {
+                    $0.identifier?.rawValue == "WKMenuItemIdentifierOpenLink"
+                }.map { $0 + 1 } ?? 0
+                let glance = NSMenuItem(title: "Open in Glance", action: #selector(self.openInGlance(_:)), keyEquivalent: "")
+                glance.target = self
+                glance.identifier = NSUserInterfaceItemIdentifier("WebOpenLinkInGlance")
+                glance.representedObject = target
+                let newTab = NSMenuItem(title: "Open in New Tab", action: #selector(self.openInNewTab(_:)), keyEquivalent: "")
+                newTab.target = self
+                newTab.identifier = NSUserInterfaceItemIdentifier("WebOpenLinkInNewTab")
+                newTab.representedObject = target
+                for identifier in [glance.identifier, newTab.identifier] {
+                    if let oldItem = menu.items.first(where: { $0.identifier == identifier }) {
+                        menu.removeItem(oldItem)
+                    }
                 }
+                let position = min(insertIndex, menu.numberOfItems)
+                menu.insertItem(glance, at: position)
+                menu.insertItem(newTab, at: position + 1)
+                menu.update()
             }
+        }
 
-            // Create "Open in New Tab" menu item
-            let openInNewTabItem = NSMenuItem(
-                title: "Open in New Tab",
-                action: #selector(openInNewTab(_:)),
-                keyEquivalent: ""
-            )
-            openInNewTabItem.target = self
-            openInNewTabItem.representedObject = url
+        private func linkTarget(_ sender: NSMenuItem) -> LinkMenuTarget? {
+            guard let target = sender.representedObject as? LinkMenuTarget,
+                  NavigationResolver.isWebURL(target.url),
+                  url == target.sourceURL,
+                  coordinator?.documentRevision == target.documentRevision,
+                  coordinator?.parent.tab?.id == target.sourceTabID else { return nil }
+            return target
+        }
 
-            // Insert our custom menu item
-            menu.insertItem(openInNewTabItem, at: insertIndex)
+        @objc private func openInGlance(_ sender: NSMenuItem) {
+            guard let target = linkTarget(sender), let window,
+                  let sourceTab = coordinator?.parent.tab else { return }
+            PeekController.shared.open(target.url, from: window, isPrivate: sourceTab.isIncognito)
         }
 
         @objc private func openInNewTab(_ sender: NSMenuItem) {
-            guard let url = sender.representedObject as? URL else { return }
-
-            // Use the existing notification system to open in new background tab
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: Notification.Name("newTabInBackgroundRequested"),
-                    object: nil,
-                    userInfo: ["url": url]
-                )
-            }
+            guard let target = linkTarget(sender), let sourceTab = coordinator?.parent.tab else { return }
+            NotificationCenter.default.post(
+                name: .newTabInBackgroundRequested,
+                object: nil,
+                userInfo: ["url": target.url, "sourceTabID": target.sourceTabID,
+                           "isIncognito": sourceTab.isIncognito]
+            )
         }
     }
 
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-        let parent: WebView
+        var parent: WebView
         weak var webView: WKWebView?
         private var progressObserver: NSKeyValueObservation?
         private var titleObserver: NSKeyValueObservation?
+        private var magnificationObserver: NSKeyValueObservation?
         private var urlObserver: NSKeyValueObservation?
         private var mixedContentObserver: NSKeyValueObservation?
         var lastLoadedURL: URL?
         var lastLoadTime: Date?
+
+        // Changes on every provisional navigation, including same-URL reloads.
+        var documentRevision: UInt64 = 0
 
         // Context menu state
         var rightClickedLinkURL: String?
@@ -1155,6 +1157,12 @@ struct WebView: NSViewRepresentable {
         }
 
         func setupObservers(for webView: WKWebView) {
+            magnificationObserver = webView.observe(\.magnification, options: .new) { [weak self] webView, _ in
+                DispatchQueue.main.async {
+                    guard let tab = self?.parent.tab, tab.webView === webView else { return }
+                    tab.zoomScale = webView.magnification
+                }
+            }
             progressObserver = webView.observe(\.estimatedProgress, options: .new) {
                 [weak self] webView, _ in
                 DispatchQueue.main.async {
@@ -1265,6 +1273,7 @@ struct WebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!)
         {
+            documentRevision &+= 1
             parent.isLoading = true
             parent.tab?.notifyLoadingStateChanged()
 
@@ -1323,6 +1332,7 @@ struct WebView: NSViewRepresentable {
 
             // Final URLSynchronizer update with completed navigation state
             if let tab = parent.tab {
+                tab.restoreState(to: webView)
                 URLSynchronizer.shared.updateFromWebViewNavigation(
                     url: webView.url,
                     title: webView.title,
@@ -1340,7 +1350,8 @@ struct WebView: NSViewRepresentable {
             }
 
             // Only extract favicon if we don't have one for this domain
-            if let currentURL = webView.url, let host = currentURL.host {
+            if parent.tab?.isIncognito != true,
+                let currentURL = webView.url, let host = currentURL.host {
                 Self.cacheQueue.sync {
 
                     let hasCachedFavicon = Self.faviconCache[host] != nil
@@ -1371,7 +1382,8 @@ struct WebView: NSViewRepresentable {
 
             // ENHANCED AUTO-READ: Intelligent content extraction with adaptive timing
             // This provides comprehensive page content without user intervention
-            if let currentURL = webView.url,
+            if parent.tab?.isIncognito != true,
+                let currentURL = webView.url,
                 let scheme = currentURL.scheme?.lowercased(),
                 scheme == "http" || scheme == "https"
             {
@@ -1466,23 +1478,12 @@ struct WebView: NSViewRepresentable {
             let nsError = error as NSError
             let networkMonitor = NetworkConnectivityMonitor.shared
 
-            // OAUTH DEBUGGING: Enhanced error logging for OAuth flows
-            if let url = webView.url, parent.isOAuthURL(url) {
-                NSLog("🔐❌ OAuth navigation failed: \(url.absoluteString)")
-                NSLog("🔐❌ OAuth error details: \(error.localizedDescription)")
-                NSLog("🔐❌ OAuth error code: \(nsError.code)")
-                NSLog("🔐❌ OAuth error domain: \(nsError.domain)")
-                if let userInfo = nsError.userInfo as? [String: Any] {
-                    NSLog("🔐❌ OAuth error userInfo: \(userInfo)")
-                }
-            }
-
             // Classify the error type for appropriate handling
             let errorType = networkMonitor.classifyError(error)
             let isNetworkError = networkMonitor.isNetworkError(error)
 
             NSLog(
-                "❌ WebView navigation failed: \(error.localizedDescription) (code: \(nsError.code), type: \(errorType))"
+                "Web navigation failed (domain: \(nsError.domain), code: \(nsError.code))"
             )
 
             parent.isLoading = false
@@ -1532,30 +1533,12 @@ struct WebView: NSViewRepresentable {
                 return
             }
 
-            // OAUTH DEBUGGING: Enhanced error logging for OAuth provisional navigation failures
-            if let url = webView.url, parent.isOAuthURL(url) {
-                NSLog("🔐❌ OAuth provisional navigation failed: \(url.absoluteString)")
-                NSLog("🔐❌ OAuth provisional error details: \(error.localizedDescription)")
-                NSLog("🔐❌ OAuth provisional error code: \(nsError.code)")
-
-                // Check for specific OAuth-related errors
-                if errorCode == NSURLErrorNotConnectedToInternet {
-                    NSLog("🔐❌ OAuth failed: No internet connection")
-                } else if errorCode == NSURLErrorTimedOut {
-                    NSLog("🔐❌ OAuth failed: Request timed out")
-                } else if errorCode == NSURLErrorCannotFindHost {
-                    NSLog("🔐❌ OAuth failed: Cannot find OAuth provider host")
-                } else if errorCode == NSURLErrorCancelled {
-                    NSLog("🔐❌ OAuth failed: Request was cancelled")
-                }
-            }
-
             // Classify the error type for appropriate handling
             let errorType = networkMonitor.classifyError(error)
             let isNetworkError = networkMonitor.isNetworkError(error)
 
             NSLog(
-                "❌ WebView provisional navigation failed: \(error.localizedDescription) (code: \(errorCode), type: \(errorType))"
+                "Web navigation could not start (domain: \(nsError.domain), code: \(errorCode))"
             )
 
             parent.isLoading = false
@@ -1674,7 +1657,7 @@ struct WebView: NSViewRepresentable {
 
             webView.evaluateJavaScript(script) { [weak self] result, error in
                 if let error = error {
-                    print("Favicon extraction error: \(error)")
+                    NSLog("Site icon extraction failed (domain: \((error as NSError).domain), code: \((error as NSError).code))")
                     // Try fallback immediately
                     let fallbackURL = URL(string: "https://\(websiteHost)/favicon.ico")
                     if let fallback = fallbackURL {
@@ -1719,7 +1702,7 @@ struct WebView: NSViewRepresentable {
                 }
 
                 if let error = error {
-                    print("Favicon download error: \(error.localizedDescription)")
+                    NSLog("Site icon download failed (domain: \((error as NSError).domain), code: \((error as NSError).code))")
                     // If favicon download fails, try alternative fallbacks
                     self?.tryFaviconFallbacks(websiteHost: websiteHost)
                     return
@@ -1795,7 +1778,7 @@ struct WebView: NSViewRepresentable {
                 }
 
                 if let error = error {
-                    print("Fallback URL \(index + 1) failed: \(error.localizedDescription)")
+                    NSLog("Site icon fallback failed (domain: \((error as NSError).domain), code: \((error as NSError).code))")
                 } else if let data = data,
                     let image = NSImage(data: data),
                     image.isValid
@@ -1884,31 +1867,23 @@ struct WebView: NSViewRepresentable {
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
 
-            // OAUTH DEBUGGING: Log navigation attempts for OAuth flows
-            if let url = navigationAction.request.url {
-                if parent.isOAuthURL(url) {
-                    NSLog("🔐 OAuth navigation detected: \(url.absoluteString)")
-                    NSLog("🔐 OAuth navigation type: \(navigationAction.navigationType.rawValue)")
-                    NSLog(
-                        "🔐 OAuth source frame: \(navigationAction.sourceFrame.isMainFrame ? "main" : "iframe")"
-                    )
-                    NSLog(
-                        "🔐 OAuth target frame: \(navigationAction.targetFrame?.isMainFrame == true ? "main" : "iframe/nil")"
-                    )
-                }
-            }
             // Check for CMD + click to open links in new background tabs
             if navigationAction.navigationType == .linkActivated,
+                !navigationAction.shouldPerformDownload,
                 navigationAction.modifierFlags.contains(.command),
-                let targetURL = navigationAction.request.url
+                let targetURL = navigationAction.request.url,
+                NavigationResolver.isWebURL(targetURL),
+                let sourceTab = parent.tab
             {
+                let sourceTabID = sourceTab.id
+                let isIncognito = sourceTab.isIncognito
 
                 // Create new tab in background using NotificationCenter
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(
                         name: Notification.Name("newTabInBackgroundRequested"),
                         object: nil,
-                        userInfo: ["url": targetURL]
+                        userInfo: ["url": targetURL, "sourceTabID": sourceTabID, "isIncognito": isIncognito]
                     )
                 }
 
@@ -1925,13 +1900,7 @@ struct WebView: NSViewRepresentable {
 
             // Skip Safe Browsing checks for local/internal URLs
             if shouldSkipSafeBrowsingCheck(for: url) {
-                // Proceed with custom navigation action if present
-                if let customAction = parent.onNavigationAction {
-                    let policy = customAction(navigationAction)
-                    decisionHandler(policy)
-                } else {
-                    decisionHandler(.allow)
-                }
+                decisionHandler(allowedNavigationPolicy(for: navigationAction))
                 return
             }
 
@@ -1941,6 +1910,13 @@ struct WebView: NSViewRepresentable {
         }
 
         // MARK: - Safe Browsing Integration
+
+        private func allowedNavigationPolicy(for action: WKNavigationAction) -> WKNavigationActionPolicy {
+            let policy = parent.onNavigationAction?(action) ?? .allow
+            guard policy == .allow, action.shouldPerformDownload else { return policy }
+            guard let url = action.request.url, NavigationResolver.isWebURL(url) else { return .cancel }
+            return .download
+        }
 
         private func shouldSkipSafeBrowsingCheck(for url: URL) -> Bool {
             guard let scheme = url.scheme?.lowercased() else { return true }
@@ -1953,9 +1929,7 @@ struct WebView: NSViewRepresentable {
             // Skip for localhost and development domains
             if let host = url.host?.lowercased() {
                 let developmentHosts = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
-                if developmentHosts.contains(host) || host.hasSuffix(".local")
-                    || host.hasSuffix(".dev")
-                {
+                if developmentHosts.contains(host) || host.hasSuffix(".local") {
                     return true
                 }
             }
@@ -1970,22 +1944,16 @@ struct WebView: NSViewRepresentable {
         ) {
             // Perform Safe Browsing check asynchronously to avoid blocking navigation
             Task { @MainActor in
-                let safetyResult = await SafeBrowsingManager.shared.checkURLSafety(url)
+                let safetyResult = await SafeBrowsingManager.shared.checkURLSafety(url, allowRemoteLookup: self.parent.tab?.isIncognito != true)
 
                 switch safetyResult {
                 case .safe:
-                    // URL is safe - proceed with navigation
-                    if let customAction = self.parent.onNavigationAction {
-                        let policy = customAction(navigationAction)
-                        decisionHandler(policy)
-                    } else {
-                        decisionHandler(.allow)
-                    }
+                    decisionHandler(self.allowedNavigationPolicy(for: navigationAction))
 
                 case .unsafe(let threat):
                     // URL is malicious - block navigation and show warning
                     NSLog(
-                        "🛡️ Safe Browsing blocked malicious URL: \(url.absoluteString) (Threat: \(threat.threatType.userFriendlyName))"
+                        "Safe Browsing blocked navigation"
                     )
 
                     // Post notification to show threat warning
@@ -2007,15 +1975,10 @@ struct WebView: NSViewRepresentable {
                     // Unable to determine safety (API error, offline, etc.)
                     // Allow navigation but log the issue
                     NSLog(
-                        "⚠️ Safe Browsing check failed for URL: \(url.absoluteString) - allowing navigation"
+                        "Navigation reputation check unavailable"
                     )
 
-                    if let customAction = self.parent.onNavigationAction {
-                        let policy = customAction(navigationAction)
-                        decisionHandler(policy)
-                    } else {
-                        decisionHandler(.allow)
-                    }
+                    decisionHandler(self.allowedNavigationPolicy(for: navigationAction))
                 }
             }
         }
@@ -2024,23 +1987,32 @@ struct WebView: NSViewRepresentable {
             _ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
             decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
         ) {
-            // Check for downloads using enhanced DownloadManager
-            if DownloadManager.shared.shouldDownloadResponse(navigationResponse.response) {
-                if let url = navigationResponse.response.url {
-                    let filename =
-                        navigationResponse.response.suggestedFilename ?? url.lastPathComponent
-
-                    // Start download using DownloadManager
-                    DownloadManager.shared.startDownload(from: url, suggestedFilename: filename)
-
-                    // Also call legacy callback if present
-                    parent.onDownloadRequest?(url, filename)
+            if DownloadResponsePolicy.shouldDownload(navigationResponse.response,
+                                                       canShowMIMEType: navigationResponse.canShowMIMEType) {
+                guard let url = navigationResponse.response.url, NavigationResolver.isWebURL(url) else {
+                    decisionHandler(.cancel)
+                    return
                 }
-                decisionHandler(.cancel)
+                // Continue the original WebKit request with its cookies and body.
+                decisionHandler(.download)
                 return
             }
 
             decisionHandler(.allow)
+        }
+
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            acceptDownload(download)
+        }
+
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            acceptDownload(download)
+        }
+
+        private func acceptDownload(_ download: WKDownload) {
+            DownloadManager.shared.handleWebViewDownload(download, isPrivate: parent.tab?.isIncognito == true)
+            parent.isLoading = false
+            parent.tab?.notifyLoadingStateChanged()
         }
 
         // MARK: - TLS Certificate Validation
@@ -2194,6 +2166,28 @@ struct WebView: NSViewRepresentable {
         // MARK: - WKUIDelegate
         // Note: Context menu customization is handled in CustomWebView subclass
 
+        func webView(
+            _ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            guard navigationAction.targetFrame == nil,
+                  let url = navigationAction.request.url,
+                  NavigationResolver.isWebURL(url),
+                  let sourceTab = parent.tab else { return nil }
+
+            // Keep form submissions intact; a URL-only tab would turn POST into GET.
+            if navigationAction.request.httpMethod?.uppercased() != "GET",
+               navigationAction.request.httpMethod != nil {
+                webView.load(navigationAction.request)
+                return nil
+            }
+            NotificationCenter.default.post(
+                name: .newTabInBackgroundRequested, object: nil,
+                userInfo: ["url": url, "sourceTabID": sourceTab.id, "isIncognito": sourceTab.isIncognito]
+            )
+            return nil
+        }
+
         // MARK: - Public Methods for Timer Management
         func cleanupWebViewTimers() {
             guard let webView = webView else { return }
@@ -2204,7 +2198,7 @@ struct WebView: NSViewRepresentable {
             ) { result, error in
                 if let error = error {
                     if AppLog.isVerboseEnabled {
-                        print("⚠️ Timer cleanup error: \(error.localizedDescription)")
+                        NSLog("Page timer cleanup failed (domain: \((error as NSError).domain), code: \((error as NSError).code))")
                     }
                 } else {
                     if AppLog.isVerboseEnabled {
@@ -2239,7 +2233,7 @@ struct WebView: NSViewRepresentable {
                 webView.evaluateJavaScript("Date.now()") { result, error in
                     if let error = error {
                         NSLog(
-                            "⚠️ WebView JavaScript responsiveness check failed: \(error.localizedDescription)"
+                            "Page responsiveness check failed (domain: \((error as NSError).domain), code: \((error as NSError).code))"
                         )
                     } else if let timestamp = result as? NSNumber {
                         let responseTime =
@@ -2400,10 +2394,12 @@ struct WebView: NSViewRepresentable {
             // Comprehensive cleanup to prevent memory leaks
             progressObserver?.invalidate()
             titleObserver?.invalidate()
+            magnificationObserver?.invalidate()
             urlObserver?.invalidate()
             mixedContentObserver?.invalidate()
             progressObserver = nil
             titleObserver = nil
+            magnificationObserver = nil
             urlObserver = nil
             mixedContentObserver = nil
 
@@ -2442,7 +2438,7 @@ struct WebView: NSViewRepresentable {
                 webView.configuration.userContentController.removeScriptMessageHandler(
                     forName: "adBlockHandler")
                 webView.configuration.userContentController.removeScriptMessageHandler(
-                    forName: "autofillHandler")
+                    forName: "autofillHandler", contentWorld: .defaultClient)
                 webView.configuration.userContentController.removeScriptMessageHandler(
                     forName: "incognitoHandler")
 

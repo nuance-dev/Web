@@ -1,201 +1,179 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct UsageBillingView: View {
-    @ObservedObject private var usageStore = AIUsageStore.shared
-    @ObservedObject private var budgetManager = UsageBudgetManager.shared
-
-    @State private var range: RangeOption = .last7Days
-    @State private var showCSV = false
+    @ObservedObject private var usage = AIUsageStore.shared
+    @ObservedObject private var budgets = UsageBudgetManager.shared
+    @ObservedObject private var providers = AIProviderManager.shared
+    @State private var range: RangeOption = .week
+    @State private var exportDocument = UsageCSVDocument(text: "")
+    @State private var exporting = false
+    @State private var exportError: String?
 
     enum RangeOption: String, CaseIterable, Identifiable {
-        case today = "Today"
-        case last7Days = "Last 7 Days"
-        case last30Days = "Last 30 Days"
+        case today = "Today", week = "7 days", month = "30 days"
         var id: String { rawValue }
-
         func bounds(now: Date = Date()) -> ClosedRange<Date> {
-            let cal = Calendar.current
-            switch self {
-            case .today:
-                let start = cal.startOfDay(for: now)
-                return start...now
-            case .last7Days:
-                let start = cal.date(byAdding: .day, value: -6, to: cal.startOfDay(for: now)) ?? now
-                return start...now
-            case .last30Days:
-                let start =
-                    cal.date(byAdding: .day, value: -29, to: cal.startOfDay(for: now)) ?? now
-                return start...now
-            }
+            let calendar = Calendar.current
+            let offset = self == .today ? 0 : self == .week ? -6 : -29
+            let start = calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: now)) ?? now
+            return start...now
         }
     }
+
+    private var events: [AIUsageEvent] { usage.events(in: range.bounds()) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            Text("Usage & Billing")
-                .font(.title3).fontWeight(.semibold)
-
-            HStack(spacing: 12) {
-                Picker("Range", selection: $range) {
-                    ForEach(RangeOption.allCases) { opt in
-                        Text(opt.rawValue).tag(opt)
-                    }
+        SettingsStack {
+            HStack {
+                Picker("Period", selection: $range) {
+                    ForEach(RangeOption.allCases) { Text($0.rawValue).tag($0) }
                 }
-                .pickerStyle(.segmented)
-
+                .pickerStyle(.segmented).frame(maxWidth: 280)
                 Spacer()
-
-                Button("Export CSV") { showCSV.toggle() }
-            }
-
-            usageSparkline
-
-            usageTotalsSection
-
-            budgetsSection
-        }
-        .sheet(isPresented: $showCSV) {
-            let csv = AIUsageStore.shared.exportCSV(in: range.bounds())
-            ScrollView {
-                Text(csv).textSelection(.enabled).font(.system(.caption, design: .monospaced))
-                    .padding()
-            }
-            .frame(width: 700, height: 500)
-        }
-    }
-
-    // MARK: - Simple Sparkline for Total Tokens (by day)
-    private var usageSparkline: some View {
-        let bounds = range.bounds()
-        let events = usageStore.events(in: bounds)
-        let cal = Calendar.current
-        let days = stride(
-            from: 0,
-            through: cal.dateComponents(
-                [.day], from: cal.startOfDay(for: bounds.lowerBound),
-                to: cal.startOfDay(for: bounds.upperBound)
-            ).day ?? 0, by: 1
-        )
-        .compactMap { offset -> (Date, Int) in
-            let day = cal.date(
-                byAdding: .day, value: offset, to: cal.startOfDay(for: bounds.lowerBound))!
-            let dayEnd = cal.date(byAdding: .day, value: 1, to: day)!
-            let total = events.filter { $0.timestamp >= day && $0.timestamp < dayEnd }.reduce(0) {
-                $0 + $1.totalTokens
-            }
-            return (day, total)
-        }
-        let maxValue = max(1, days.map { $0.1 }.max() ?? 1)
-
-        return VStack(alignment: .leading, spacing: 8) {
-            Text("Trend")
-                .font(.headline)
-            GeometryReader { geo in
-                HStack(alignment: .bottom, spacing: 3) {
-                    ForEach(Array(days.enumerated()), id: \.offset) { pair in
-                        let item = pair.element
-                        let height = CGFloat(item.1) / CGFloat(maxValue) * max(12, geo.size.height)
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Color.accentColor.opacity(0.35))
-                            .frame(width: 6, height: max(2, height))
-                    }
+                Button("Export CSV", systemImage: "square.and.arrow.up") {
+                    exportDocument = UsageCSVDocument(text: usage.exportCSV(in: range.bounds()))
+                    exporting = true
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .buttonStyle(.glass).disabled(events.isEmpty)
             }
-            .frame(height: 60)
-        }
-    }
-
-    private var usageTotalsSection: some View {
-        let bounds = range.bounds()
-        let totals = usageStore.aggregate(in: bounds)
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Totals by Provider/Model")
-                .font(.headline)
-            if totals.isEmpty {
-                Text("No usage in selected range.").foregroundColor(.secondary)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(totals, id: \.providerId) { t in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text("\(t.providerId) • \(t.modelId)")
-                                    .fontWeight(.medium)
-                                Text(
-                                    "Tokens: \(t.totalTokens)  •  Cost: $\(String(format: "%.4f", t.estimatedCostUSD))"
-                                )
-                                .font(.caption).foregroundColor(.secondary)
+            SettingsCard("Recorded usage", icon: "chart.bar") {
+                if events.isEmpty {
+                    Text("No requests in this period.").foregroundStyle(.secondary)
+                } else {
+                    HStack(alignment: .top) {
+                        metric("Requests", value: events.count.formatted())
+                        Spacer()
+                        metric("Tokens", value: events.reduce(0) { $0 + $1.totalTokens }.formatted())
+                        Spacer()
+                        metric("Estimated cost", value: costDescription(events))
+                    }
+                    Divider()
+                    ForEach(Array(usage.aggregate(in: range.bounds()).enumerated()), id: \.offset) { _, total in
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(modelName(total.modelId)).fontWeight(.medium).lineLimit(1)
+                                Text("\(providerName(total.providerId)) · \(total.totalTokens.formatted()) tokens")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text("\(t.requestCount) reqs").font(.caption)
+                            VStack(alignment: .trailing, spacing: 3) {
+                                Text(costDescription(events.filter {
+                                    $0.providerId == total.providerId && $0.modelId == total.modelId
+                                }))
+                                Text("\(total.requestCount) requests").font(.caption).foregroundStyle(.secondary)
+                            }
                         }
-                        .padding(8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8).fill(
-                                Color(NSColor.controlBackgroundColor)))
                     }
                 }
+                Text("Estimates may omit charges or interrupted replies. Your provider has the final bill.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
+            SettingsCard("Spending reminders", icon: "creditcard") {
+                Text("Pause at a local estimate. Set a hard limit with your provider.")
+                    .font(.caption).foregroundStyle(.secondary)
+                let external = providers.availableProviders.filter { $0.providerType == .external }
+                if external.isEmpty {
+                    Button("Connect a provider") { SettingsView.open(.aiProvider) }.buttonStyle(.glass)
+                }
+                ForEach(external, id: \.providerId) { provider in
+                    Divider()
+                    UsageBudgetRow(providerID: provider.providerId, name: provider.displayName,
+                        initial: budgets.getBudget(for: provider.providerId)
+                            ?? .init(dailyUSD: nil, monthlyUSD: nil, blockOnExceed: false))
+                }
+            }
+            if let exportError { Text(exportError).font(.caption).foregroundStyle(.secondary) }
+        }
+        .fileExporter(isPresented: $exporting, document: exportDocument,
+                      contentType: .commaSeparatedText, defaultFilename: "Web AI usage") { result in
+            if case .failure(let error) = result { exportError = error.localizedDescription }
         }
     }
 
-    private var budgetsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Budgets")
-                .font(.headline)
-
-            let providers = AIProviderManager.shared.availableProviders
-            ForEach(providers, id: \.providerId) { p in
-                let current =
-                    budgetManager.getBudget(for: p.providerId)
-                    ?? UsageBudgetManager.Budget(
-                        dailyUSD: nil, monthlyUSD: nil, blockOnExceed: false)
-                BudgetRow(providerId: p.providerId, initial: current)
-            }
+    private func metric(_ title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 20, weight: .medium)).monospacedDigit()
         }
+    }
+
+    private func costDescription(_ events: [AIUsageEvent]) -> String {
+        guard events.allSatisfy({ $0.estimatedCostUSD != nil }) else { return "Incomplete" }
+        let cost = events.compactMap(\.estimatedCostUSD).reduce(0, +)
+        return cost.formatted(.currency(code: "USD").precision(.fractionLength(2...4)))
+    }
+
+    private func providerName(_ id: String) -> String {
+        providers.availableProviders.first(where: { $0.providerId == id })?.displayName ?? id
+    }
+
+    private func modelName(_ id: String) -> String {
+        providers.availableProviders.flatMap(\.availableModels).first(where: { $0.id == id })?.name ?? id
     }
 }
 
-private struct BudgetRow: View {
-    let providerId: String
-    @State var daily: String
-    @State var monthly: String
-    @State var blockOnExceed: Bool
+private struct UsageBudgetRow: View {
+    let providerID: String
+    let name: String
+    @State private var daily: String
+    @State private var monthly: String
+    @State private var pause: Bool
+    @State private var saved = false
 
-    init(providerId: String, initial: UsageBudgetManager.Budget) {
-        self.providerId = providerId
-        self._daily = State(initialValue: initial.dailyUSD.map { String($0) } ?? "")
-        self._monthly = State(initialValue: initial.monthlyUSD.map { String($0) } ?? "")
-        self._blockOnExceed = State(initialValue: initial.blockOnExceed)
+    init(providerID: String, name: String, initial: UsageBudgetManager.Budget) {
+        self.providerID = providerID
+        self.name = name
+        _daily = State(initialValue: initial.dailyUSD.map { String($0) } ?? "")
+        _monthly = State(initialValue: initial.monthlyUSD.map { String($0) } ?? "")
+        _pause = State(initialValue: initial.blockOnExceed)
     }
+
+    private var valid: Bool { [daily, monthly].allSatisfy { value in
+        value.isEmpty || (Double(value).map { $0.isFinite && $0 >= 0 } ?? false)
+    } }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text(providerId).frame(width: 120, alignment: .leading)
-            TextField("Daily $", text: $daily)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 100)
-            TextField("Monthly $", text: $monthly)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 120)
-            Toggle("Block on exceed", isOn: $blockOnExceed)
-            Spacer()
-            Button("Save") {
-                UsageBudgetManager.shared.setBudget(
-                    for: providerId,
-                    budget: .init(
-                        dailyUSD: Double(daily),
-                        monthlyUSD: Double(monthly),
-                        blockOnExceed: blockOnExceed
-                    )
-                )
+        VStack(alignment: .leading, spacing: 10) {
+            Text(name).fontWeight(.medium)
+            HStack(spacing: 12) {
+                budgetField("Daily, USD", value: $daily)
+                budgetField("Monthly, USD", value: $monthly)
             }
+            HStack {
+                Toggle("Pause at estimate", isOn: $pause).toggleStyle(.switch).controlSize(.small)
+                Spacer()
+                Button(saved ? "Saved" : "Save") {
+                    UsageBudgetManager.shared.setBudget(for: providerID,
+                        budget: .init(dailyUSD: Double(daily), monthlyUSD: Double(monthly), blockOnExceed: pause))
+                    saved = true
+                }
+                .buttonStyle(.glass).disabled(!valid || saved)
+            }
+            if !valid { Text("Enter a positive amount, or leave blank for no limit.").font(.caption).foregroundStyle(.secondary) }
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.1)))
+        .onChange(of: daily) { _, _ in saved = false }
+        .onChange(of: monthly) { _, _ in saved = false }
+        .onChange(of: pause) { _, _ in saved = false }
+    }
+
+    private func budgetField(_ title: String, value: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            TextField("No limit", text: value).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("\(name) \(title)")
+        }
     }
 }
 
-#Preview {
-    UsageBillingView().frame(width: 700, height: 600)
+private struct UsageCSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+    var text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        text = String(decoding: configuration.file.regularFileContents ?? Data(), as: UTF8.self)
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: Data(text.utf8))
+    }
 }

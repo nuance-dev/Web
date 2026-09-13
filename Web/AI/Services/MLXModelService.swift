@@ -63,8 +63,15 @@ class MLXModelService: ObservableObject {
             modelKey: "llama3_2_3B_4bit"
         )
 
+        static let defaultModel = MLXModelConfiguration(
+            name: LocalModelDefaults.displayName,
+            modelId: LocalModelDefaults.repositoryID,
+            estimatedSizeGB: LocalModelDefaults.downloadSizeGB,
+            modelKey: LocalModelDefaults.repositoryID
+        )
+
         // Gemma 2 2B 4-bit configuration (high quality, compact)
-        static let gemma3_2B_4bit = MLXModelConfiguration(
+        static let gemma2_2B_4bit = MLXModelConfiguration(
             name: "Gemma 2 2B 4-bit (MLX)",
             modelId: "gemma3_2B_4bit",
             estimatedSizeGB: 1.4,
@@ -72,7 +79,7 @@ class MLXModelService: ObservableObject {
         )
 
         // Gemma 2 9B 4-bit configuration (highest quality)
-        static let gemma3_9B_4bit = MLXModelConfiguration(
+        static let gemma2_9B_4bit = MLXModelConfiguration(
             name: "Gemma 2 9B 4-bit (MLX)",
             modelId: "gemma3_9B_4bit",
             estimatedSizeGB: 5.2,
@@ -84,21 +91,14 @@ class MLXModelService: ObservableObject {
 
     private let fileManager = FileManager.default
     private var downloadTask: Task<Void, Error>?
+    private var initializationTask: (id: UUID, task: Task<Void, Error>)?
 
     // MARK: - Initialization
 
     init() {
-        // Set default model configuration
-        Task { @MainActor in
-            currentModel = MLXModelConfiguration.gemma3_2B_4bit
-        }
-
-        // Immediately check for existing model on initialization
-        Task {
-            await performIntelligentModelCheck()
-        }
-
-        AppLog.debug("MLXModelService init - checking for existing MLX AI model…")
+        currentModel = .defaultModel
+        // Constructing settings or a provider must not launch parallel downloads.
+        // The selected provider owns initialization through initializeAI().
     }
 
     deinit {
@@ -129,24 +129,19 @@ class MLXModelService: ObservableObject {
         return nil
     }
 
-    /// Start AI initialization - downloads model if needed
+    /// Concurrent callers await the same load and receive its actual success or failure.
+    @MainActor
     func initializeAI() async throws {
-        // If already ready, no action needed
-        if await isAIReady() {
-            AppLog.debug("MLX AI model already ready - no download needed")
+        if let pending = initializationTask {
+            try await pending.task.value
             return
         }
-
-        // If currently downloading, just wait
-        if downloadState == .downloading {
-            if AppLog.isVerboseEnabled {
-                AppLog.debug("MLX AI model download in progress - waiting…")
-            }
-            return
-        }
-
-        // Start download/loading process
-        try await downloadModelIfNeeded()
+        if isModelReady && downloadState == .ready { return }
+        let id = UUID()
+        let task = Task { @MainActor in try await self.downloadModelIfNeeded() }
+        initializationTask = (id, task)
+        defer { if initializationTask?.id == id { initializationTask = nil } }
+        try await task.value
     }
 
     /// Get download information for UI
@@ -180,84 +175,20 @@ class MLXModelService: ObservableObject {
         NSLog("❌ MLX AI model download cancelled by user")
     }
 
-    /// Switch to a different model configuration
+    /// Model changes use the same awaited loading path; errors are never swallowed.
     @MainActor
-    func switchToModel(_ configuration: MLXModelConfiguration) async {
-        guard configuration.modelId != currentModel?.modelId else {
-            NSLog("ℹ️ Already using model: \(configuration.name)")
-            return
+    func switchToModel(_ configuration: MLXModelConfiguration) async throws {
+        if let pending = initializationTask {
+            try? await pending.task.value
+            if initializationTask?.id == pending.id { initializationTask = nil }
         }
-
-        NSLog("🔄 Switching to model: \(configuration.name)")
-
-        // Clear current model state
-        isModelReady = false
-        downloadState = .notStarted
-        downloadProgress = 0.0
-        currentModel = configuration
-
-        // Clear the MLX runner's model to force reload
-        await SimplifiedMLXRunner.shared.clearModel()
-
-        // Check if new model is available
-        await performIntelligentModelCheck()
-    }
-
-    // MARK: - Private Methods
-
-    /// Intelligent model detection and validation
-    @MainActor
-    private func performIntelligentModelCheck() async {
-        downloadState = .checking
-
-        guard let model = currentModel else {
-            downloadState = .failed("No model configuration available")
-            return
-        }
-
-        if AppLog.isVerboseEnabled {
-            AppLog.debug("Checking MLX model availability: \(model.name)")
-        }
-
-        do {
-            // Try to ensure the model is loaded - this will trigger MLX to download if needed
-            downloadState = .downloading
-            downloadProgress = 0.0
-
-            // Monitor progress during loading
-            let progressTask = Task {
-                while !Task.isCancelled {
-                    let progress = SimplifiedMLXRunner.shared.loadProgress
-                    await MainActor.run {
-                        self.downloadProgress = Double(progress)
-                    }
-
-                    if progress >= 1.0 {
-                        break
-                    }
-
-                    try await Task.sleep(nanoseconds: 100_000_000)  // Check every 0.1 seconds
-                }
-            }
-
-            try await SimplifiedMLXRunner.shared.ensureLoaded(modelId: model.modelId)
-
-            progressTask.cancel()
-
-            // If we got here, the model is ready
-            isModelReady = true
-            downloadState = .ready
-            downloadProgress = 1.0
-
-            AppLog.debug("MLX model validated and ready: \(model.name)")
-
-        } catch {
-            downloadState = .failed(error.localizedDescription)
+        if configuration.modelId != currentModel?.modelId {
             isModelReady = false
-            downloadProgress = 0.0
-
-            AppLog.error("MLX model check failed: \(error.localizedDescription)")
+            downloadState = .notStarted
+            downloadProgress = 0
+            currentModel = configuration
         }
+        try await initializeAI()
     }
 
     @MainActor

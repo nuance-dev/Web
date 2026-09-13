@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/nuance-dev/Web/security/advisories/new
+    about: Security reports go here, not in public issues.
+  - name: Build or contribute
+    url: https://github.com/nuance-dev/Web/blob/main/CONTRIBUTING.md
+    about: Setup, tests and where to find the code.

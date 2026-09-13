@@ -12,15 +12,6 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<false/>
-	<!-- SECURITY: JIT compilation required for WebKit JavaScriptCore on Apple Silicon
-	     This entitlement is MANDATORY for WKWebView functionality but creates attack surface.
-	     Compensating controls: Runtime integrity monitoring, process isolation, sandbox restrictions -->
-	<key>com.apple.security.cs.allow-jit</key>
-	<true/>
-	
-	<!-- SECURITY: Removed com.apple.security.cs.allow-unsigned-executable-memory
-	     This entitlement was OVERLY PERMISSIVE and not required for WebKit/MLX functionality.
-	     JIT entitlement provides sufficient capability while maintaining better security. -->
 	<key>com.apple.security.print</key>
 	<true/>
 	<key>com.apple.security.personal-information.addressbook</key>

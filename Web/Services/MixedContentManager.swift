@@ -246,6 +246,9 @@ class MixedContentManager: NSObject, ObservableObject {
             url: url
         )
 
+        // Keep the live indicator available without retaining private page URLs.
+        guard webView.configuration.websiteDataStore.isPersistent else { return currentStatus }
+
         // Store status for this tab
         tabMixedContentStatus[tabID] = currentStatus
 

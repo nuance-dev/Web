@@ -1,0 +1,26 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.16000,0.19000,0.24000,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "Globe.svg",
+          "name": "Globe"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

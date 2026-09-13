@@ -1,415 +1,267 @@
 import SwiftUI
 
-// Enhanced new tab view with Web logo and next-gen design
 struct NewTabView: View {
     let tab: Tab?
-    
-    @State private var searchText: String = ""
-    @State private var recentlyVisited: [String] = []
-    @State private var recentlyClosed: [String] = []
-    @FocusState private var isSearchFocused: Bool
-    @State private var isSearchHovered: Bool = false
-    @State private var isAISidebarExpanded: Bool = false
-    
-    // Initialize with optional tab for incognito detection
-    init(tab: Tab? = nil) {
-        self.tab = tab
+    @ObservedObject private var history = HistoryService.shared
+    @ObservedObject private var bookmarks = BookmarkService.shared
+    @StateObject private var windowReference = BrowserWindowReference()
+    @AppStorage("searchEngine") private var searchEngineID = BrowserSearchEngine.google.rawValue
+    @State private var searchText = ""
+    @State private var didFocusSearch = false
+    @FocusState private var searchFocused: Bool
+
+    init(tab: Tab? = nil) { self.tab = tab }
+
+    private var isPrivate: Bool { tab?.isIncognito == true }
+    private var searchEngine: BrowserSearchEngine {
+        BrowserSearchEngine(rawValue: searchEngineID) ?? .google
     }
-    
+    private var savedPages: [Bookmark] {
+        Array(bookmarks.bookmarks.filter { item in
+            guard let url = URL(string: item.url) else { return false }
+            return NavigationResolver.isWebURL(url)
+        }.prefix(6))
+    }
+    private var recentPages: [HistoryItem] {
+        guard !isPrivate else { return [] }
+        var hosts = Set<String>()
+        return Array(history.recentHistory.filter { item in
+            guard let url = URL(string: item.url), NavigationResolver.isWebURL(url),
+                  let host = url.host?.lowercased() else { return false }
+            return hosts.insert(host).inserted
+        }.prefix(4))
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            VStack {
-                Spacer()
-                
-                VStack(spacing: 32) {
-                    VStack(spacing: 16) {
-                        // App logo with subtle animation
-                        AnimatedWebLogo()
-                            .frame(width: 80, height: 80)
-                        
-                        // Incognito indicator (only shown for incognito tabs)
-                        if tab?.isIncognito == true {
-                            incognitoIndicator
+            ScrollView {
+                GlassEffectContainer(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 26) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if isPrivate {
+                                HStack(spacing: 8) {
+                                    Text("Private tab")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .padding(.horizontal, 9).padding(.vertical, 5)
+                                        .glassEffect(.regular, in: .capsule)
+                                    Text("History stays off.")
+                                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 2)
+                            }
+                            searchField
+                            quickActions(showKeys: geometry.size.width > 480)
                         }
+                        if !savedPages.isEmpty { bookmarksSection }
+                        if !recentPages.isEmpty { recentSection }
                     }
-                    
-                    // Main search bar
-                    enhancedSearchBar
-                        .frame(maxWidth: 600)
-                    
-                    // Quick access grid
-                    quickAccessGrid
-                        .frame(maxWidth: 800)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24)
-                
-                Spacer()
-            }
-        }
-        .background(adaptiveBackground)
-        .onAppear {
-            loadData()
-            // Auto-focus search bar when new tab opens
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                isSearchFocused = true
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .aISidebarStateChanged)) { notification in
-            if let expanded = notification.object as? Bool {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isAISidebarExpanded = expanded
+                    .frame(maxWidth: 580)
+                    .padding(.horizontal, 24)
+                    .padding(.top, max(36, min(140, geometry.size.height * 0.22)))
+                    .padding(.bottom, 28)
+                    .frame(maxWidth: .infinity, alignment: .top)
                 }
             }
+            .scrollIndicators(.hidden)
+        }
+        .background(BrowserWindowReader(reference: windowReference))
+        .task { focusSearchOnce() }
+        .onChange(of: windowReference.isKeyWindow) { _, isKey in
+            if isKey { focusSearchOnce() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .focusAddressBarRequested)) { _ in
+            if windowReference.acceptsCommands { searchFocused = true }
         }
     }
-    
-    // MARK: - View Components
-    private var incognitoIndicator: some View {
-        HStack(spacing: 8) {
-            // Small purple dot matching sidebar indicators
-            Circle()
-                .fill(.purple.opacity(0.8))
-                .frame(width: 6, height: 6)
-            
-            Text("Incognito")
-                .font(.system(.caption, weight: .medium))
-                .foregroundColor(.purple.opacity(0.8))
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(
-            Capsule()
-                .fill(.purple.opacity(0.1))
-                .stroke(.purple.opacity(0.2), lineWidth: 0.5)
-        )
-        .opacity(0.8)
-    }
-    
-    private var adaptiveBackground: some View {
-        ZStack {
-            // Base background
-            Color.clear
-            
-            // Subtle gradient overlay
-            LinearGradient(
-                colors: [
-                    Color.primary.opacity(0.01),
-                    Color.primary.opacity(0.02),
-                    Color.clear
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            
-            // Subtle ambient particles (next-gen minimal)
-            FloatingParticlesView()
-                .opacity(0.15)
-        }
-    }
-    
-    private var enhancedSearchBar: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
-                .font(.system(size: 16, weight: .medium))
-            
-            TextField("Search or enter website", text: $searchText)
-                .textFieldStyle(.plain)
-                .font(.system(.body, weight: .regular))
-                .focused($isSearchFocused)
-                .onSubmit {
-                    performSearch()
+
+    private var searchField: some View {
+        HStack(spacing: 10) {
+            Menu {
+                Picker("Search engine", selection: $searchEngineID) {
+                    ForEach(BrowserSearchEngine.allCases) { engine in
+                        Text(engine.title).tag(engine.rawValue)
+                    }
                 }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(
-            ZStack {
-                // Base background
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(.ultraThinMaterial)
-                    .opacity(0.6)
-                
-                // Subtle glow effect when focused
-                if isSearchFocused {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    .blue.opacity(0.3),
-                                    .purple.opacity(0.2),
-                                    .blue.opacity(0.3)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
-                        .blur(radius: 0.5)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 15))
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
                 }
-                
-                // Minimal border
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(
-                        Color(NSColor.separatorColor).opacity(isSearchHovered ? 0.3 : 0.15),
-                        lineWidth: 0.5
-                    )
+                .foregroundStyle(.secondary)
+                .frame(height: 32)
             }
-        )
-        .scaleEffect(isSearchHovered || isSearchFocused ? 1.01 : 1.0)
-        .animation(.easeInOut(duration: 0.15), 
-                  value: isSearchHovered || isSearchFocused)
-        .onHover { hovering in
-            isSearchHovered = hovering
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Search with \(searchEngine.title)")
+            .accessibilityLabel("Search engine: \(searchEngine.title)")
+            TextField("Search \(searchEngine.title) or enter a link", text: $searchText)
+                .textFieldStyle(.plain).font(.system(size: 15))
+                .focused($searchFocused).onSubmit(search)
+                .accessibilityLabel("Search or enter a link")
+            Button(action: search) {
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: .circle)
+            .disabled(searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Go").accessibilityLabel("Go")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(searchFocused ? Color.accentColor.opacity(0.4) : .clear, lineWidth: 1)
+                .allowsHitTesting(false)
         }
     }
-    
-    
-    private var quickAccessGrid: some View {
-        HStack(spacing: 16) {
-            MinimalActionCard(
-                icon: "clock.arrow.circlepath",
-                title: "Recently Visited"
-            ) {
-                KeyboardShortcutHandler.shared.showHistoryPanel = true
+
+    private func quickActions(showKeys: Bool) -> some View {
+        HStack(spacing: 6) {
+            shortcut("Glance", icon: "rectangle.bottomthird.inset.filled",
+                     key: showKeys ? PeekController.shared.shortcut.label : nil) {
+                NotificationCenter.default.post(name: .togglePeekRequested, object: nil)
             }
-            
-            MinimalActionCard(
-                icon: "arrow.uturn.left.circle",
-                title: "Recently Closed"
-            ) {
-                KeyboardShortcutHandler.shared.showHistoryPanel = true
+            shortcut("Commands", icon: "command", key: showKeys ? "⌘K" : nil) {
+                NotificationCenter.default.post(name: .showCommandPaletteRequested, object: nil)
             }
-            
-            MinimalActionCard(
-                icon: "star.fill",
-                title: "Bookmarks"
-            ) {
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var bookmarksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeading("Bookmarks", actionTitle: "Show all") {
                 KeyboardShortcutHandler.shared.showBookmarksPanel = true
             }
-            
-            MinimalActionCard(
-                icon: "arrow.down.circle.fill",
-                title: "Downloads"
-            ) {
-                KeyboardShortcutHandler.shared.showDownloadsPanel = true
-            }
-            
-            MinimalActionCard(
-                icon: "sparkles",
-                title: "AI Assistant",
-                isActive: isAISidebarExpanded
-            ) {
-                NotificationCenter.default.post(name: .toggleAISidebar, object: nil)
-            }
-        }
-    }
-    
-    
-    // MARK: - Methods
-    private func loadData() {
-        // Load recently visited sites (mock data for now)
-        recentlyVisited = ["Apple.com", "GitHub.com", "Google.com", "Stack Overflow"]
-        
-        // Load recently closed tabs (mock data for now)
-        recentlyClosed = ["Documentation", "Tutorial", "News Article"]
-        
-    }
-    
-    
-    private func performSearch() {
-        guard !searchText.isEmpty else { return }
-        
-        // Navigate to URL or perform search
-        if isValidURL(searchText) {
-            navigateToURL(searchText)
-        } else {
-            performGoogleSearch(searchText)
-        }
-        
-        searchText = ""
-        isSearchFocused = false
-    }
-    
-    private func isValidURL(_ string: String) -> Bool {
-        return string.contains(".") && !string.contains(" ") && URL(string: addHttpIfNeeded(string)) != nil
-    }
-    
-    private func addHttpIfNeeded(_ string: String) -> String {
-        if string.hasPrefix("http://") || string.hasPrefix("https://") {
-            return string
-        }
-        return "https://\(string)"
-    }
-    
-    private func navigateToURL(_ urlString: String) {
-        if let url = URL(string: addHttpIfNeeded(urlString)) {
-            // Navigate in current tab instead of creating new one
-            NotificationCenter.default.post(
-                name: .navigateCurrentTab,
-                object: url
-            )
-        }
-    }
-    
-    private func performGoogleSearch(_ query: String) {
-        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        if let url = URL(string: "https://www.google.com/search?q=\(encodedQuery)") {
-            NotificationCenter.default.post(
-                name: .navigateCurrentTab,
-                object: url
-            )
-        }
-    }
-}
-
-// MARK: - Supporting Views
-
-// Use AnimatedWebLogo from WebLogo.swift
-
-
-struct FloatingParticlesView: View {
-    @State private var particles: [Particle] = []
-    @State private var animationTimer: Timer?
-    @State private var isAnimationSuspended: Bool = false
-    
-    struct Particle: Identifiable {
-        let id = UUID()
-        var position: CGPoint
-        var velocity: CGVector
-        var size: CGFloat
-        var opacity: Double
-        var color: Color
-    }
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                ForEach(particles) { particle in
-                    Circle()
-                        .fill(particle.color)
-                        .frame(width: particle.size, height: particle.size)
-                        .opacity(particle.opacity)
-                        .position(particle.position)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 6)], spacing: 6) {
+                ForEach(savedPages, id: \.objectID) { item in
+                    Button {
+                        guard let url = URL(string: item.url) else { return }
+                        navigate(to: url)
+                    } label: {
+                        HStack(spacing: 9) {
+                            siteIcon(item.faviconData, host: domain(item.url), size: 22)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.displayTitle).font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.primary).lineLimit(1)
+                                Text(domain(item.url)).font(.system(size: 10))
+                                    .foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(11)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(.rect(cornerRadius: 12))
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 12))
+                    .help(item.url)
                 }
             }
-            .onAppear {
-                generateParticles(in: geometry.size)
-                startAnimation()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .suspendParticleAnimations)) { _ in
-                suspendAnimations()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .resumeParticleAnimations)) { _ in
-                resumeAnimations()
-            }
         }
     }
-    
-    private func generateParticles(in size: CGSize) {
-        particles = (0..<8).map { _ in
-            Particle(
-                position: CGPoint(
-                    x: CGFloat.random(in: 0...size.width),
-                    y: CGFloat.random(in: 0...size.height)
-                ),
-                velocity: CGVector(
-                    dx: CGFloat.random(in: -0.15...0.15),
-                    dy: CGFloat.random(in: -0.15...0.15)
-                ),
-                size: CGFloat.random(in: 1...2),
-                opacity: Double.random(in: 0.08...0.15),
-                color: [.blue.opacity(0.7), .purple.opacity(0.7), .mint.opacity(0.7)].randomElement() ?? .blue
-            )
-        }
-    }
-    
-    private func startAnimation() {
-        // CRITICAL FIX: Background-aware animation timer to prevent resource usage when app is not focused
-        guard !isAnimationSuspended else { return }
-        createAnimationTimer()
-    }
-    
-    private func createAnimationTimer() {
-        // CRITICAL FIX: Reduce animation frequency to prevent main thread saturation
-        // Changed from 80ms (12.5 FPS) to 200ms (5 FPS) to reduce main thread load
-        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [self] _ in
-            updateParticles()
-        }
-    }
-    
-    private func updateParticles() {
-        // Remove withAnimation to reduce SwiftUI overhead during input handling
-        for i in particles.indices {
-            particles[i].position.x += particles[i].velocity.dx
-            particles[i].position.y += particles[i].velocity.dy
-                
-            // Wrap around edges
-            if particles[i].position.x < 0 { particles[i].position.x = 800 }
-            if particles[i].position.x > 800 { particles[i].position.x = 0 }
-            if particles[i].position.y < 0 { particles[i].position.y = 600 }
-            if particles[i].position.y > 600 { particles[i].position.y = 0 }
-        }
-    }
-    
-    private func suspendAnimations() {
-        NSLog("⏸️ Suspending particle animations")
-        isAnimationSuspended = true
-        animationTimer?.invalidate()
-        animationTimer = nil
-    }
-    
-    private func resumeAnimations() {
-        NSLog("▶️ Resuming particle animations")
-        guard isAnimationSuspended else { return }
-        isAnimationSuspended = false
-        createAnimationTimer()
-    }
-}
 
-struct MinimalActionCard: View {
-    let icon: String
-    let title: String
-    let action: () -> Void
-    let isActive: Bool
-    
-    @State private var isHovered: Bool = false
-    
-    init(icon: String, title: String, isActive: Bool = false, action: @escaping () -> Void) {
-        self.icon = icon
-        self.title = title
-        self.action = action
-        self.isActive = isActive
-    }
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(isActive ? .accentColor : (isHovered ? .primary : .secondary))
-                
-                Text(title)
-                    .font(.system(.caption2, weight: .medium))
-                    .foregroundColor(isActive ? .accentColor : (isHovered ? .primary : .secondary))
-                    .multilineTextAlignment(.center)
+    private var recentSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            sectionHeading("Recently visited", actionTitle: "History") {
+                KeyboardShortcutHandler.shared.showHistoryPanel = true
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 50)
-            .scaleEffect(isHovered ? 1.05 : 1.0)
-            .opacity(isHovered ? 1.0 : 0.8)
+            ForEach(recentPages, id: \.objectID) { item in
+                Button {
+                    guard let url = URL(string: item.url) else { return }
+                    navigate(to: url)
+                } label: {
+                    HStack(spacing: 9) {
+                        siteIcon(item.faviconData, host: domain(item.url), size: 18)
+                        Text(item.displayTitle).font(.system(size: 12)).lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(domain(item.url)).font(.system(size: 10)).foregroundStyle(.secondary)
+                            .lineLimit(1).frame(maxWidth: 145, alignment: .trailing)
+                        Image(systemName: "arrow.up.left").font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .contentShape(.rect(cornerRadius: 9))
+                }
+                .buttonStyle(BrowserControlStyle(glass: true))
+                .help(item.url)
+            }
+        }
+    }
+
+    private func sectionHeading(_ title: String, actionTitle: String, action: @escaping () -> Void) -> some View {
+        HStack {
+            Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            Spacer()
+            Button(action: action) {
+                HStack(spacing: 4) {
+                    Text(actionTitle)
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .medium))
+                }
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 3)
+        .padding(.bottom, 2)
+    }
+
+    private func shortcut(_ title: String, icon: String, key: String?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 11))
+                Text(title).font(.system(size: 11, weight: .medium))
+                if let key {
+                    Text(key).font(.system(size: 10)).foregroundStyle(.tertiary)
+                        .padding(.leading, 3)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10).padding(.vertical, 7)
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isHovered = hovering
-            }
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .accessibilityLabel(title)
+    }
+
+    @ViewBuilder private func siteIcon(_ data: Data?, host: String, size: CGFloat) -> some View {
+        if let data, let icon = NSImage(data: data) {
+            Image(nsImage: icon).resizable().scaledToFit().frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else {
+            Text(String(host.prefix(1)).uppercased())
+                .font(.system(size: size * 0.6, weight: .medium)).foregroundStyle(.secondary)
+                .frame(width: size, height: size)
+                .background(.quaternary, in: .rect(cornerRadius: 5))
+                .accessibilityHidden(true)
         }
+    }
+
+    private func domain(_ address: String) -> String {
+        let host = URL(string: address)?.host ?? ""
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
+    private func focusSearchOnce() {
+        guard windowReference.acceptsCommands, !didFocusSearch else { return }
+        didFocusSearch = true
+        searchFocused = true
+    }
+
+    private func search() {
+        guard let url = NavigationResolver.resolve(searchText, engine: searchEngine) else { return }
+        navigate(to: url)
+        searchFocused = false
+    }
+
+    private func navigate(to url: URL) {
+        guard NavigationResolver.isWebURL(url), windowReference.acceptsCommands else { return }
+        if let tab { tab.navigate(to: url) }
+        else { NotificationCenter.default.post(name: .navigateCurrentTab, object: url) }
     }
 }
 
 #Preview {
-    NewTabView(tab: nil)
-        .frame(width: 1200, height: 800)
+    NewTabView().frame(width: 1000, height: 700)
 }

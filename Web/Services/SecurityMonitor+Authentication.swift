@@ -210,7 +210,6 @@ extension SecurityMonitor {
         // Add device/app context
         enhancedDetails["app_version"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         enhancedDetails["os_version"] = ProcessInfo.processInfo.operatingSystemVersionString
-        enhancedDetails["device_name"] = Host.current().localizedName ?? "unknown"
         
         logSecurityEvent(
             eventType: .suspiciousActivity, // Map to existing SecurityEvent.EventType

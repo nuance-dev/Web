@@ -1,0 +1,46 @@
+name: App bug
+description: A crash, broken control, or unexpected behavior in Web.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. For a broken website, use **Website compatibility**.
+        Report vulnerabilities [privately](https://github.com/nuance-dev/Web/security/advisories/new). Keep credentials, private URLs and personal details out of reports and recordings.
+  - type: input
+    id: version
+    attributes:
+      label: Web version
+      description: From Web → About Web, or the commit if you built from source.
+      placeholder: Version and build, or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS and chip
+      placeholder: macOS 26.5, Apple M2
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Mention private tabs, multiple windows or displays if relevant. If it happened once, say so.
+      placeholder: |
+        1. Open…
+        2. Choose…
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Screenshot or extra details
+      description: Optional. For AI issues, include the provider and model name. Share only the relevant redacted error, not keys or full conversations.
