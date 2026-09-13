@@ -1,16 +1,16 @@
 # Demo walkthroughs
 
-Three MP4 walkthroughs are attached to [PR #26](https://github.com/nuance-dev/Web/pull/26). They use captured app states with simple cuts, concise captions and a persistent **Captured app states** label. They are not continuous screen recordings and do not demonstrate animation timing. The native Screenshot recorder repeatedly stalled without saving a recording.
+The Glance and Copy Quote walkthroughs are attached to [PR #26](https://github.com/nuance-dev/Web/pull/26). The updated Focus walkthrough and assistant screenshot are attached to [PR #27](https://github.com/nuance-dev/Web/pull/27). They use captured app states with simple cuts, concise captions and a persistent **Captured app states** label. They are not continuous screen recordings and do not demonstrate animation timing. The native Screenshot recorder repeatedly stalled without saving a recording.
 
 | Clip | Length | Captured states |
 | --- | --- | --- |
 | [Glance](https://github.com/user-attachments/assets/6658afa4-133c-45d5-ab10-c35ab70a5a21) | 26 seconds | Saturn in Web; Glance input; a Titan link; the loaded panel; pinned panel; Titan promoted to a full tab beside Saturn. |
-| [Focus Mode](https://github.com/user-attachments/assets/b9b3aa4b-4ab3-42b8-b3f1-65d57aee1315) | 20 seconds | Titan with browser controls; Focus Mode; the address field revealed with Command-L; the page again. |
+| [Focus Mode](https://github.com/user-attachments/assets/aa4881b2-547e-4e3c-9e06-9386f4a014d6) | 19 seconds | Saturn with sidebar tabs; tabs moved to the top; Focus Mode; the address field revealed above the page with Command-L. |
 | [Copy Quote](https://github.com/user-attachments/assets/dff8d111-215e-4881-ba88-09bce2000da6) | 20 seconds | A selected passage on `example.com`; a close-up of that selection; the passage and source pasted into an untitled TextEdit document. |
 
 Panel and selection close-ups are labeled. No desktop composite, invented cursor movement or simulated app transition appears. The walkthroughs do not show the link context menu or validate the system-wide shortcut.
 
-The inspected frames contain public Wikipedia and `example.com` pages only. No desktop, menu bar, personal account, local path or credential appears. The exports are silent H.264, 1280 × 900 at 30 fps, each below 1 MB. File metadata is stripped. The README retains the original Web banner; walkthroughs show the running app.
+The inspected frames contain public NASA, Wikipedia and `example.com` pages only. No desktop, menu bar, personal account, local path or credential appears. The exports are silent H.264, 1280 × 900 at 30 fps, each below 1 MB. File metadata is stripped. The README retains the original Web banner. The updated Focus clip and assistant image show the final 0.1.1 build; Glance and Copy Quote retain their earlier walkthroughs.
 
 ## Publishing
 

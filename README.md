@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/6658afa4-133c-45d5-ab10-c35ab70a5a21
 
 Press `⇧⌘B` for just the page. `⌘L` brings back the address field.
 
-https://github.com/user-attachments/assets/b9b3aa4b-4ab3-42b8-b3f1-65d57aee1315
+https://github.com/user-attachments/assets/aa4881b2-547e-4e3c-9e06-9386f4a014d6
 
 ### Copy Quote
 
