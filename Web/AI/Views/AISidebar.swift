@@ -259,7 +259,9 @@ struct AISidebar: View {
                         Text(assistant.streamingText.isEmpty ? "Thinking" : "Writing")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .leading)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .frame(width: 44, alignment: .leading)
                     }
                     .fixedSize()
                     .accessibilityElement(children: .combine)
