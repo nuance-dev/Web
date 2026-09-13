@@ -166,6 +166,7 @@ struct AppearanceSettingsView: View {
     @AppStorage("tabDisplayMode") private var tabDisplay: TabDisplayMode = .sidebar
     @AppStorage("hideTopBar") private var hideTopBar = false
     @AppStorage("matchPageColor") private var matchPageColor = false
+    @AppStorage("animateNewTabs") private var animateNewTabs = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -182,6 +183,8 @@ struct AppearanceSettingsView: View {
                     isOn: Binding(get: { !hideTopBar }, set: { hideTopBar = !$0 }))
                 SettingsToggle(title: "Match page color", detail: "Use the page’s color behind browser controls.",
                     isOn: $matchPageColor)
+                SettingsToggle(title: "New tab animation", detail: "Light travels around the search field.",
+                    isOn: $animateNewTabs)
             }
             SettingsCard("System appearance", icon: "circle.lefthalf.filled") {
                 SettingsValueRow(title: "Color scheme", value: "Follows macOS")

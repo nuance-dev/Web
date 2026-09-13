@@ -433,7 +433,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -447,7 +447,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.2;
 				OTHER_SWIFT_FLAGS = "$(inherited) -file-prefix-map $(SRCROOT)=/src/Web -debug-prefix-map $(SRCROOT)=/src/Web";
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.Web;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -467,7 +467,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -481,7 +481,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.5;
-				MARKETING_VERSION = 0.1.1;
+				MARKETING_VERSION = 0.1.2;
 				OTHER_SWIFT_FLAGS = "$(inherited) -file-prefix-map $(SRCROOT)=/src/Web -debug-prefix-map $(SRCROOT)=/src/Web";
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.Web;
 				PRODUCT_NAME = "$(TARGET_NAME)";

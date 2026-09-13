@@ -6,8 +6,13 @@ struct NewTabView: View {
     @ObservedObject private var bookmarks = BookmarkService.shared
     @StateObject private var windowReference = BrowserWindowReference()
     @AppStorage("searchEngine") private var searchEngineID = BrowserSearchEngine.google.rawValue
+    @AppStorage("animateNewTabs") private var animateNewTabs = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var searchText = ""
     @State private var didFocusSearch = false
+    @State private var lightStartedAt: Date?
+    @State private var lightTask: Task<Void, Never>?
     @FocusState private var searchFocused: Bool
 
     init(tab: Tab? = nil) { self.tab = tab }
@@ -68,7 +73,13 @@ struct NewTabView: View {
         .task { focusSearchOnce() }
         .onChange(of: windowReference.isKeyWindow) { _, isKey in
             if isKey { focusSearchOnce() }
+            else { stopLight() }
         }
+        .onChange(of: searchText) { _, value in if !value.isEmpty { stopLight() } }
+        .onChange(of: animateNewTabs) { _, enabled in if !enabled { stopLight() } }
+        .onChange(of: reduceMotion) { _, enabled in if enabled { stopLight() } }
+        .onChange(of: reduceTransparency) { _, enabled in if enabled { stopLight() } }
+        .onDisappear(perform: stopLight)
         .onReceive(NotificationCenter.default.publisher(for: .focusAddressBarRequested)) { _ in
             if windowReference.acceptsCommands { searchFocused = true }
         }
@@ -113,6 +124,14 @@ struct NewTabView: View {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(searchFocused ? Color.accentColor.opacity(0.4) : .clear, lineWidth: 1)
                 .allowsHitTesting(false)
+        }
+        .overlay {
+            if let lightStartedAt {
+                NewTabLight(startedAt: lightStartedAt)
+                    .padding(-12)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
     }
 
@@ -247,6 +266,23 @@ struct NewTabView: View {
         guard windowReference.acceptsCommands, !didFocusSearch else { return }
         didFocusSearch = true
         searchFocused = true
+        guard tab?.hasShownNewTabLight != true else { return }
+        tab?.hasShownNewTabLight = true
+        guard animateNewTabs, !reduceMotion, !reduceTransparency,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
+        lightStartedAt = Date()
+        lightTask = Task { @MainActor in
+            do { try await Task.sleep(for: .milliseconds(900)) }
+            catch { return }
+            lightStartedAt = nil
+            lightTask = nil
+        }
+    }
+
+    private func stopLight() {
+        lightTask?.cancel()
+        lightTask = nil
+        lightStartedAt = nil
     }
 
     private func search() {

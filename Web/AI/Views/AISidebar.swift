@@ -51,9 +51,9 @@ struct AISidebar: View {
                 GlassEffectContainer(spacing: 8) {
                     VStack(spacing: 8) {
                         header
-                        if providers.isInitializing {
+                        if providers.isInitializing && !assistant.isInitializing {
                             HStack(spacing: 8) {
-                                ProgressView().controlSize(.mini)
+                                activityOrb(.loading)
                                 Text("Switching provider…").font(.system(size: 12)).foregroundStyle(.secondary)
                                 Spacer()
                             }.padding(.horizontal, 4)
@@ -181,7 +181,7 @@ struct AISidebar: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
-                    if assistant.messages.isEmpty && assistant.isInitializing { loadingStatus }
+                    if assistant.isInitializing { loadingStatus }
                     ForEach(assistant.messages) { message in
                         AssistantMessageRow(message: message,
                             streamingText: assistant.animationState.streamingMessageId == message.id
@@ -212,7 +212,7 @@ struct AISidebar: View {
     private var loadingStatus: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                ProgressView().controlSize(.mini)
+                activityOrb(.loading)
                 Text(assistant.initializationStatus).font(.system(size: 12))
             }
             if providers.currentProvider?.providerType == .local, runner.isLoading {
@@ -254,7 +254,15 @@ struct AISidebar: View {
                 pageAttachment
                 Spacer(minLength: 0)
                 if isBusy {
-                    Text("Responding").font(.system(size: 10)).foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        activityOrb(assistant.streamingText.isEmpty ? .thinking : .writing)
+                        Text(assistant.streamingText.isEmpty ? "Thinking" : "Writing")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .leading)
+                    }
+                    .fixedSize()
+                    .accessibilityElement(children: .combine)
                 }
                 Button {
                     if isBusy { responseTask?.cancel() } else { sendMessage() }
@@ -316,6 +324,10 @@ struct AISidebar: View {
         .accessibilityHint("Opens page sharing options")
         .help(includesPage ? "Page included. Change sharing options" : "Page sharing options")
         .popover(isPresented: $showingPageOptions, arrowEdge: .bottom) { pageOptions }
+    }
+
+    private func activityOrb(_ activity: AssistantActivityOrb.Activity) -> some View {
+        AssistantActivityOrb(activity: activity, isWindowActive: windowReference.isKeyWindow)
     }
 
     private func pageTitle(_ tab: Tab) -> String {
@@ -401,12 +413,7 @@ private struct AssistantMessageRow: View {
                 Text(content).font(.system(size: 13, weight: .medium))
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: .rect(cornerRadius: 12))
-            } else if content.isEmpty {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.mini)
-                    Text("Thinking…").font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-            } else {
+            } else if !content.isEmpty {
                 AssistantMarkdownView(content: content, isStreaming: streamingText != nil, openLink: openLink)
                     .equatable()
             }

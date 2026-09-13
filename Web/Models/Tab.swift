@@ -19,6 +19,9 @@ class Tab: ObservableObject, Identifiable, Transferable, Equatable {
     @Published var lastAccessed: Date = Date()
     @Published var isActive: Bool = false
 
+    // Visual state lasts for this tab, without entering session archives.
+    var hasShownNewTabLight = false
+
     // Performance optimization features
     @Published var isHibernated: Bool = false
     @Published var snapshot: NSImage?
