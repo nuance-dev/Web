@@ -17,3 +17,4 @@ __pycache__/
 *.dmg
 *.zip
 .local/
+dist/
